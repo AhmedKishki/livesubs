@@ -1,0 +1,142 @@
+# livesubs configuration.
+#
+# Copy to `livesubs.yaml` and edit. This file is SAFE TO COMMIT: it carries
+# structure and choices, never secrets. API keys belong in the environment or in
+# `.env` - see `.env.example`.
+#
+# Every value here has a working default, so livesubs runs with no config file at
+# all. Delete anything you have not changed.
+#
+# Precedence, highest first:
+#   1. a real environment variable   export LIVESUBS_PORT=9000
+#   2. .env files                    ./.env over ~/.config/livesubs/.env
+#   3. this file
+#   4. built-in defaults
+#
+# So a deployment-specific override never has to be written here.
+
+server:
+  # 0.0.0.0 listens on every interface, which is what a hall needs. It is a bind
+  # address, not a URL: opening http://0.0.0.0:8000/ works in your own browser and is
+  # refused on every phone. Open the LAN address the command prints.
+  host: 0.0.0.0
+  port: 8000
+  log_level: info
+  # The QR code normally encodes whatever host the attendee reached the landing
+  # page on, which needs no configuration. A host that cannot address this machine
+  # from elsewhere (0.0.0.0, localhost, 169.254.*) is replaced by the LAN address.
+  # Set this only to force an address, e.g. a DNS name behind a proxy.
+  # public_url: http://subs.example.org:8000
+
+session:
+  # Appears in the viewer URL and the QR code.
+  id: demo
+  name: Live subtitles
+  # The only language a viewer renders. The English source is stripped on the
+  # server, so a viewer's device never receives it.
+  language: de
+  # Where the frontend is served from. Unset means <repository>/web.
+  # web_dir: /srv/livesubs/web
+
+capture:
+  # Linux/PipeWire is the only supported backend for now.
+  mode: pw_record
+  # The device to record from. DELIBERATELY EMPTY: a device identifier is valid
+  # only on the machine that produced it, so a shipped default would be wrong
+  # everywhere else.
+  #
+  # Run `livesubs --preflight` to list the candidates on this machine, then paste
+  # one here. Use the name, never an index: numeric ids change across reboots.
+  target: ""
+  # Must stay 16000/1: the streaming ASR providers expect 16 kHz mono.
+  sample_rate: 16000
+  channels: 1
+  # Check actual PCM before connecting providers. Sustained clipping triggers
+  # bounded, verified hardware Capture-gain reductions for this exact source.
+  # No digital attenuation, playback-volume changes or silence-driven boosts.
+  auto_calibrate: true
+  # During the session: verify corrections, enforce cooldown/attempt limits,
+  # and stop visibly if clipping cannot be corrected safely.
+  runtime_calibration: true
+  # Archive raw audio, for building an evaluation set. Gitignored.
+  archive: true
+  archive_dir: recordings
+
+segmentation:
+  # The pacing policy. See docs/03-segmentation.md.
+  #
+  # A 2 s segment is roughly 1.5-2 s of reading at 200 wpm, so segment cadence
+  # and pipeline latency are matched and the lag stays STABLE rather than growing.
+  # Raising it does not add lag; lowering it damages German, because clause-final
+  # verbs need the whole clause.
+  max_segment_ms: 2000
+  # Trailing silence that closes a segment.
+  endpoint_silence_ms: 350
+  # Fragments shorter than this translate badly, so a pause alone will not close them.
+  min_segment_ms: 400
+  # Previous source sentences sent to the translator, for German word order.
+  context_segments: 2
+  # Prefer the ASR provider's own endpointing over our energy VAD. Set false if a
+  # provider's endpointing proves too slow or too twitchy.
+  trust_provider_endpointing: true
+
+# Which provider serves each stage, in FALLBACK ORDER: the first that has a
+# usable key is used, and the rest are failover. Anything registered for the role
+# but not listed still works, after the listed ones.
+#
+# An empty list means "any active provider for that role, in registry order".
+pipeline:
+  asr: [deepgram, openai]
+  mt: [deepseek]
+
+# Providers. Built-in ones can be retuned here; new ones can be declared.
+#
+# A declared provider is immediately visible, settable (`livesubs --set-key`) and
+# configurable, but it is only USABLE once an adapter exists for its name - see
+# docs/11-extending.md. Declaring one you have no adapter for is not an error, it
+# just does nothing yet, and `status: planned` says so explicitly.
+providers:
+  deepgram:
+    options:
+      model: nova-3
+      # EU data residency: uncomment to keep audio processing inside the EU.
+      # url: wss://api.eu.deepgram.com
+  openai:
+    options:
+      model: gpt-live-transcribe
+      # minimal | low | medium | high | xhigh - the latency/accuracy dial.
+      delay: low
+  deepseek:
+    options:
+      model: deepseek-flash
+      base_url: https://api.deepseek.com
+      # MUST stay "disabled": reasoning adds seconds of latency per segment, which
+      # the subtitle latency budget cannot absorb. Startup validation enforces it.
+      thinking: disabled
+
+  # A provider this repository does not ship. Uncomment alongside an adapter:
+  # acme:
+  #   role: asr                  # required for a provider that is not built in
+  #   env_var: ACME_API_KEY      # defaults to <NAME>_API_KEY
+  #   label: ACME streaming ASR
+  #   status: planned            # holds a key, satisfies nothing
+  #   options:
+  #     endpoint: wss://api.acme.test
+  #     model: acme-1
+
+  # A model running on this machine, which needs no credential at all. Set
+  # `requires_key: false` and validation stops asking for one; set `adapter` to the kind
+  # of wire protocol it speaks, because a declared provider is otherwise refused rather
+  # than guessed at. `timeout_s` is raised because an 8B model on a CPU can take twenty
+  # seconds to produce its first token where a hosted one takes one, and a hosted model's
+  # timeout would report that as a failure.
+  #
+  # ollama:
+  #   role: mt
+  #   requires_key: false
+  #   label: Ollama (local model, English -> German)
+  #   options:
+  #     adapter: openai_compat
+  #     base_url: http://127.0.0.1:11434/v1
+  #     model: qwen2.5:7b-instruct
+  #     timeout_s: "180"

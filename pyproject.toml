@@ -1,0 +1,68 @@
+[project]
+name = "livesubs"
+version = "1.0.0"
+description = "Realtime English-to-German lecture subtitles, served to attendees over a QR code."
+readme = "README.md"
+requires-python = ">=3.12"
+# SPDX identifier, rather than the deprecated `license = { text = "..." }` table.
+license = "MIT"
+license-files = ["LICENSE"]
+
+# No torch, no CUDA. The deployment box has no NVIDIA GPU, so all model
+# inference happens at the API edge. onnxruntime is CPU-only and is used
+# solely for an optional Silero VAD.
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "httpx>=0.27",
+    "websockets>=13.0",
+    "openai>=1.54",
+    "numpy>=2.0",
+    "qrcode[pil]>=8.0",
+    # The committed config file is YAML because it is edited by hand: comments and
+    # nested provider definitions matter. JSON has no comments and TOML is stdlib
+    # but awkward for lists of objects.
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# Optional: only needed for energy-based VAD fallback experiments.
+vad = ["onnxruntime>=1.20"]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.7"]
+
+[project.scripts]
+live-sub = "livesubs.__main__:main"
+livesubs = "livesubs.__main__:main"
+
+[project.urls]
+Repository = "https://github.com/AhmedKishki/livesubs"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+exclude = [".kilo/**"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/livesubs"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"web/static" = "livesubs/web/static"
+"web/index.html" = "livesubs/web/index.html"
+"web/viewer.html" = "livesubs/web/viewer.html"
+"web/admin.html" = "livesubs/web/admin.html"
+"livesubs.yaml.example" = "livesubs/livesubs.yaml.example"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.uv]
+package = true

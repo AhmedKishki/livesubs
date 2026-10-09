@@ -1,0 +1,28 @@
+[Unit]
+Description=livesubs realtime EN->DE lecture subtitles
+Documentation=https://github.com/AhmedKishki/livesubs/blob/main/docs/08-operations.md
+Wants=pipewire.socket wireplumber.service
+After=pipewire.service wireplumber.service network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Configure capture.target and credentials for this user before enabling the unit.
+[Service]
+Type=simple
+WorkingDirectory=%h
+
+# Runs as the operator's user so that it can reach that user's PipeWire session
+# and read per-user credentials. Do NOT run this as root: it needs the user's PipeWire socket,
+# and the service has no authentication by design (see docs/07-delivery-qr.md).
+# It must never be exposed to the internet.
+#
+ExecStart=%h/.local/bin/livesubs --start
+Restart=always
+RestartSec=3
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=livesubs
+
+[Install]
+WantedBy=default.target

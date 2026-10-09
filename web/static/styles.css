@@ -1,0 +1,399 @@
+/* livesubs overlay.
+ *
+ * Three rules drive everything here:
+ *   1. No words are ever removed. A subtitle that silently drops the end of a
+ *      sentence is worse than one that is smaller or taller, so the text gives way in
+ *      size rather than in content. See `.subtitle`.
+ *   2. No layout shift. The block reserves two lines, so the backdrop cannot jump for
+ *      the usual case even though a longer line takes more room.
+ *   3. State is carried by OPACITY, never colour. Colour alone fails for
+ *      colourblind viewers and against arbitrary backgrounds.
+ *
+ * See docs/06-overlay-spec.md.
+ */
+
+:root {
+  /* Both axes, not just height. A height-only rule is right on a laptop and wrong on a
+     phone: 4.2vh of 844px is 35px, which is a comfortable caption across 1440px and a
+     four-line wall across 390px. The width term is what keeps a narrow screen to a
+     readable number of lines, and it is why the block no longer needs a clamp.
+     overlay.js applies the same rule when a viewer changes the size. */
+  --subtitle-font-size: clamp(24px, min(4.2vh, 7vw), 72px);
+  --subtitle-max-width: min(92vw, 1600px);
+  --backdrop: rgba(0, 0, 0, 0.55);
+  --draft-opacity: 0.62;
+  --fade-in-ms: 140ms;
+  --fade-out-ms: 200ms;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #000;
+  color: #fff;
+  font-family: Inter, "Source Sans 3", system-ui, -apple-system, sans-serif;
+  overscroll-behavior: none;
+}
+
+/* The overlay itself. `pointer-events: none` on the root keeps the page
+ * scrollable and selectable; only controls opt back in. */
+.overlay-root {
+  position: fixed;
+  inset: auto 0 8vh 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 2147483647;
+}
+
+.overlay-root.is-top {
+  inset: 8vh 0 auto 0;
+}
+
+/* Two stacked layers, cross-faded. A single element would have to fade out,
+ * swap text, then fade in - a visible gap on every line change.
+ *
+ * `bottom: 0` is load-bearing and is not obvious. The root is a zero-height strip held
+ * 8vh above the bottom edge, so a layer with no vertical inset takes its *static*
+ * position - the start of the cross axis, which for a row is the top - and the block
+ * then grows downwards, off the bottom of the screen. Every line past the first was
+ * therefore invisible, and the subtitles looked "cut" rather than absent. Anchoring the
+ * layer's bottom edge makes a block grow upward, which is what a subtitle does. */
+.subtitle-layer {
+  position: absolute;
+  bottom: 0;
+  inline-size: var(--subtitle-max-width);
+  display: flex;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity var(--fade-in-ms) ease-out;
+}
+
+/* At the top of the screen the same reasoning runs the other way: the block grows
+ * downwards from the anchor instead. */
+.overlay-root.is-top .subtitle-layer {
+  bottom: auto;
+  top: 0;
+}
+
+.subtitle-layer.is-visible {
+  opacity: 1;
+}
+
+.subtitle-layer.is-leaving {
+  transition: opacity var(--fade-out-ms) ease-in;
+}
+
+.subtitle {
+  text-align: center;
+  font-size: var(--subtitle-font-size);
+  line-height: 1.28;
+  font-weight: 600;
+  text-wrap: balance;
+
+  /* German compounds are the common case here, not the exception: "Schwingungs-
+     dämpfung" is one word and "Resonanzfrequenz" is another. Breaking them is better
+     than pushing them past the edge. `lang="de"` on the text element is what makes
+     hyphenation apply at all - without that attribute this rule does nothing. */
+  hyphens: auto;
+  overflow-wrap: break-word;
+
+  /* A floor, not a ceiling. Two lines are reserved so the backdrop cannot jump for the
+     usual case, and a line that needs more simply takes the room - the font shrinks to
+     fit before anything is cut, and grows no further than it has to. */
+  min-height: 2.56em;
+}
+
+.subtitle-text {
+  transition: opacity 120ms ease-out;
+}
+
+/* Draft: still changing, so visibly provisional. */
+.subtitle-layer.is-draft .subtitle-text {
+  opacity: var(--draft-opacity);
+}
+
+.subtitle-layer.is-final .subtitle-text {
+  opacity: 1;
+}
+
+/* Backdrop modes. Different rooms and different projected content need
+ * different treatments, so all three ship. */
+.backdrop-box .subtitle {
+  background: var(--backdrop);
+  border-radius: 8px;
+  padding: 0.35em 0.8em;
+  backdrop-filter: blur(2px);
+}
+
+.backdrop-shadow .subtitle {
+  text-shadow:
+    0 2px 6px rgba(0, 0, 0, 0.9),
+    0 0 2px #000;
+}
+
+/* --- status pill ----------------------------------------------------------
+ * A stale line must never look live. `delayed` and `stopped` are visually
+ * distinct, and `stopped` also dims the subtitle text. */
+
+.status-pill {
+  position: fixed;
+  top: 1.2vh;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.35em 0.9em;
+  border-radius: 999px;
+  font-size: clamp(12px, 1.6vh, 20px);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.85);
+  opacity: 0;
+  transition: opacity 200ms ease-out;
+  pointer-events: none;
+  z-index: 2147483647;
+}
+
+.status-pill.is-visible {
+  opacity: 1;
+}
+
+.status-pill.is-stopped {
+  background: rgba(120, 0, 0, 0.85);
+  border-color: rgba(255, 255, 255, 0.45);
+  color: #fff;
+}
+
+/* When stopped, dim the last line so it cannot be mistaken for live text. */
+.overlay-root.is-stalled .subtitle-layer.is-visible .subtitle-text {
+  opacity: 0.4;
+}
+
+/* --- viewer controls ------------------------------------------------------ */
+
+.controls {
+  position: fixed;
+  top: 1.2vh;
+  right: 1.2vw;
+  font-size: 14px;
+  color: #fff;
+  z-index: 2147483647;
+}
+
+.controls-toggle {
+  pointer-events: auto;
+  width: 2.4em;
+  height: 2.4em;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 14px;
+  cursor: pointer;
+  opacity: 0.45;
+  transition: opacity 160ms ease-out;
+}
+
+.controls-toggle:hover,
+.controls-toggle:focus-visible {
+  opacity: 1;
+}
+
+.controls-panel {
+  pointer-events: auto;
+  position: absolute;
+  top: 3em;
+  right: 0;
+  width: 15em;
+  padding: 0.9em;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  display: none;
+}
+
+.controls-panel.is-open {
+  display: block;
+}
+
+.controls-panel fieldset {
+  border: 0;
+  margin: 0 0 0.8em 0;
+  padding: 0;
+}
+
+.controls-panel legend {
+  opacity: 0.7;
+  font-size: 0.85em;
+  margin-bottom: 0.3em;
+}
+
+.controls-panel button {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #fff;
+  border-radius: 6px;
+  padding: 0.25em 0.6em;
+  margin: 0 0.25em 0.25em 0;
+  cursor: pointer;
+  font-size: 0.95em;
+}
+
+.controls-panel button[aria-pressed="true"] {
+  background: rgba(255, 255, 255, 0.85);
+  color: #000;
+}
+
+/* --- static pages (landing and operator console) --------------------------- */
+
+.page {
+  padding: clamp(1rem, 3vw, 2.5rem);
+  background: #0b0d10;
+  color: #e9edf2;
+  font-family: Inter, "Source Sans 3", system-ui, -apple-system, sans-serif;
+  line-height: 1.5;
+}
+
+.page h1 {
+  font-size: clamp(1.4rem, 3vw, 2rem);
+  font-weight: 650;
+  margin: 0 0 0.6rem;
+}
+
+.page h2 {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.6;
+  margin: 0 0 0.5rem;
+}
+
+.join {
+  max-width: 34rem;
+  margin: 6vh auto 0;
+  text-align: center;
+}
+
+.join-qr {
+  width: min(70vw, 20rem);
+  height: auto;
+  margin: 0.5rem auto 1rem;
+  display: block;
+  border-radius: 12px;
+  background: #fff;
+  padding: 0.75rem;
+}
+
+.join-url a {
+  color: #7fd1ff;
+  font-size: clamp(1rem, 2.4vw, 1.25rem);
+  word-break: break-all;
+}
+
+.join-notes {
+  list-style: none;
+  padding: 0;
+  margin: 2rem 0 0;
+  opacity: 0.75;
+  font-size: 0.95rem;
+}
+
+.join-notes li {
+  margin: 0.25rem 0;
+}
+
+.admin-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  margin: 0 0 1.5rem;
+}
+
+.admin-stats div {
+  display: flex;
+  flex-direction: column;
+}
+
+.admin-stats dt {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  opacity: 0.55;
+}
+
+.admin-stats dd {
+  margin: 0.15rem 0 0;
+  font-variant-numeric: tabular-nums;
+  font-size: 1.1rem;
+}
+
+#stat-status[data-status="live"] {
+  color: #6ee7a8;
+}
+
+#stat-status[data-status="delayed"] {
+  color: #fbbf24;
+}
+
+#stat-status[data-status="stopped"] {
+  color: #f87171;
+}
+
+.admin-live {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.admin-de {
+  font-size: clamp(1.1rem, 2.2vw, 1.6rem);
+  font-weight: 600;
+  margin: 0 0 0.4rem;
+}
+
+.admin-src {
+  opacity: 0.6;
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.admin-history {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.admin-history li {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 0.5rem 0;
+}
+
+.admin-history .admin-de {
+  display: block;
+  font-size: 1rem;
+  font-weight: 500;
+  margin: 0;
+}
+
+.admin-history .admin-src {
+  display: block;
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+/* Motion is decoration; some viewers need it gone. Declared last so it wins. */
+@media (prefers-reduced-motion: reduce) {
+  .subtitle-layer,
+  .subtitle-text,
+  .status-pill {
+    transition: none !important;
+  }
+}

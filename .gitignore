@@ -1,0 +1,49 @@
+# secrets and local config
+.env
+.env.local
+*.key
+token
+
+# The deployment config. Safe to commit in the sense that it holds no secrets,
+# but it describes ONE deployment, so it is ignored by default. A deployment that
+# wants its own versioned should un-ignore it:
+#   !livesubs.yaml
+# The annotated template `livesubs.yaml.example` IS tracked.
+livesubs.yaml
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+
+# node / frontend
+node_modules/
+web/dist/
+*.tsbuildinfo
+
+# captured audio and derived artefacts (never commit lecture audio)
+recordings/
+*.wav
+*.flac
+*.raw
+*.pcm
+sessions/
+logs/
+
+# Sample corpora used to verify a session. The media and its transcript are not ours
+# to redistribute, and the derived WAV and reference text are regenerable, so only the
+# README is tracked - see samples/README.md.
+samples/*
+!samples/README.md
+
+# editor / os
+.vscode/
+.idea/
+.DS_Store

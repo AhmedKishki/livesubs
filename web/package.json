@@ -1,0 +1,9 @@
+{
+  "name": "livesubs-web",
+  "private": true,
+  "type": "module",
+  "description": "No build step. This file exists only so node treats static/*.js as ES modules for the pacing parity test. There are no dependencies and nothing is installed.",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  }
+}

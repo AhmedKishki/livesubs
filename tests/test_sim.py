@@ -1,0 +1,307 @@
+"""Tests for the credential-free replay harness.
+
+The harness is what lets the overlay and pacing be developed with no API keys and
+no microphone, so it needs to be trustworthy: the sequence must be deterministic,
+and shutdown must not hang.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncIterator
+
+from livesubs.approaches import build_approach
+from livesubs.config import Settings
+from livesubs.events import HelloMessage, SegmentMessage, StatusMessage
+from livesubs.hub import ClientRole, Hub, SegmentPublisher
+from livesubs.segmenter import hold_ms
+from livesubs.sim import SCRIPTS, SimPublisher, replay
+
+
+async def test_replay_sequence_is_deterministic() -> None:
+    """speed=0 runs flat out, making the whole frame sequence observable."""
+
+    messages = [message async for message in replay("default", speed=0)]
+
+    assert messages[0].type == "hello"
+    assert messages[1].type == "status"
+    assert messages[1].data.status == "live"
+
+    # Terminates with a terminal status, so the client can show "stopped".
+    assert messages[-1].type == "status"
+    assert messages[-1].data.status == "stopped"
+
+    segments = [m for m in messages if isinstance(m, SegmentMessage)]
+    assert segments[0].data.seq == 0
+    assert segments[0].data.state == "draft"
+    assert segments[1].data.seq == 0
+    assert segments[1].data.state == "final"
+
+
+async def test_every_script_segment_is_emitted_as_draft_then_final() -> None:
+    script = "default"
+    count = len(SCRIPTS[script].segments)
+    messages = [message async for message in replay(script, speed=0)]
+    segments = [m.data for m in messages if isinstance(m, SegmentMessage)]
+
+    assert len(segments) == 2 * count
+
+    # seq advances every two frames; rev goes 0 then 1.
+    assert [segment.seq for segment in segments] == [
+        index for index in range(count) for _ in range(2)
+    ]
+    assert [segment.rev for segment in segments] == [0, 1] * count
+
+
+async def test_revisions_rewrite_rather_than_append() -> None:
+    """The hard case for the overlay, so it must be present in the fixture."""
+
+    messages = [message async for message in replay("default", speed=0)]
+    segments = [m.data for m in messages if isinstance(m, SegmentMessage)]
+
+    revised = [
+        (segments[i].de, segments[i + 1].de)
+        for i in range(0, len(segments), 2)
+        if segments[i].de != segments[i + 1].de
+    ]
+    assert revised, "at least one revision must actually change the text"
+
+
+async def test_fast_speaker_genuinely_outruns_reading_speed() -> None:
+    """Otherwise the display catch-up rule is dead code that will rot.
+
+    The cadence must be comfortably shorter than the reading time of the German,
+    or the overlay's drop rule can never trigger and would go untested.
+    """
+
+    script = SCRIPTS["fast_speaker"]
+    longest = max(len(segment.de_final) for segment in script.segments)
+
+    assert script.cadence_ms < hold_ms(longest) * 0.6
+    assert script.cadence_ms < SCRIPTS["default"].cadence_ms
+
+
+async def test_all_scripts_are_declared() -> None:
+    assert set(SCRIPTS) == {"default", "fast_speaker", "lengthy"}
+    for script in SCRIPTS.values():
+        assert script.segments, "a script with no lines is not useful"
+        assert script.cadence_ms > 0
+
+
+async def test_lengthy_script_is_longer_than_default() -> None:
+    assert len(SCRIPTS["lengthy"].segments) > len(SCRIPTS["default"].segments)
+
+
+async def test_unknown_script_is_rejected() -> None:
+    try:
+        [message async for message in replay("nope", speed=0)]
+    except KeyError as exc:
+        assert "nope" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected KeyError for an unknown script")
+
+
+# --- publishing into the hub ---------------------------------------------------
+
+
+def test_sim_publisher_satisfies_the_publisher_protocol() -> None:
+    """It must be interchangeable with the live pipeline at the hub seam."""
+
+    assert isinstance(SimPublisher(), SegmentPublisher)
+
+
+async def test_sim_publisher_feeds_the_hub_and_terminates() -> None:
+    hub = Hub()
+    subscriber = hub.subscribe(ClientRole.VIEWER)
+    seen: list[str] = []
+
+    async def collect() -> None:
+        while True:
+            batch = await subscriber.mailbox.receive()
+            seen.extend(message.type for message in batch)
+            if any(
+                message.type == "status" and message.data.status == "stopped"
+                for message in batch
+            ):
+                return
+
+    collector = asyncio.create_task(collect())
+
+    await SimPublisher(script="default", speed=0).run(
+        hub, session_id="test", stop=asyncio.Event()
+    )
+    await asyncio.wait_for(collector, timeout=2.0)
+
+    assert seen[0] == "hello"
+    assert "segment" in seen
+    assert seen[-1] == "status"
+
+
+async def test_viewer_never_sees_the_source_through_the_hub() -> None:
+    """Same guarantee as the hub tests, exercised via the sim path."""
+
+    hub = Hub()
+    subscriber = hub.subscribe(ClientRole.VIEWER)
+
+    await SimPublisher(script="default", speed=0).run(
+        hub, session_id="test", stop=asyncio.Event()
+    )
+
+    batch = await asyncio.wait_for(subscriber.mailbox.receive(), timeout=1.0)
+    segments = [m.data for m in batch if isinstance(m, SegmentMessage)]
+    assert segments
+    assert all(segment.src is None for segment in segments)
+
+
+# --- shutdown ------------------------------------------------------------------
+
+
+async def test_stop_cuts_a_long_replay_short() -> None:
+    """Shutting down must not wait out a two-second inter-segment pause.
+
+    The lengthy script sleeps ~2 s between segments; without racing the sleep
+    against the stop event this would take many seconds to cancel.
+    """
+
+    stop = asyncio.Event()
+    hub = Hub()
+    publisher = SimPublisher(script="lengthy", speed=1.0)
+
+    task = asyncio.create_task(publisher.run(hub, session_id="test", stop=stop))
+    await asyncio.sleep(0.05)                    # let it get into a sleep
+    stop.set()
+
+    await asyncio.wait_for(task, timeout=1.0)
+
+
+async def test_stop_already_set_returns_immediately() -> None:
+    hub = Hub()
+    stop = asyncio.Event()
+    stop.set()
+
+    await asyncio.wait_for(
+        SimPublisher(script="lengthy", speed=1.0).run(hub, session_id="test", stop=stop),
+        timeout=1.0,
+    )
+
+
+
+# --- looping ---------------------------------------------------------------------
+#
+# Serving repeats the script, and the reason is a bug found by using the thing rather
+# than by testing it. The default script lasts twelve seconds, so the session had
+# already stopped by the time anyone had walked to the phone and scanned the code. The
+# viewer loaded a page that never received a subtitle, which is indistinguishable from
+# a broken QR code - and was diagnosed as one.
+
+
+async def _take_frames(
+    messages: AsyncIterator[HelloMessage | SegmentMessage | StatusMessage],
+    count: int,
+) -> list[HelloMessage | SegmentMessage | StatusMessage]:
+    """Pull exactly ``count`` frames and close the generator.
+
+    A looping replay has no end, so the only way to observe one is to stop asking.
+    """
+
+    taken: list[HelloMessage | SegmentMessage | StatusMessage] = []
+    async for message in messages:
+        taken.append(message)
+        if len(taken) >= count:
+            break
+    return taken
+
+
+#: A replay opens with a hello and a live status before the first subtitle frame, so
+#: frame counts and segment counts differ by this much.
+_OPENING_FRAMES = 2
+
+
+def _frames_for(segments: int) -> int:
+    return _OPENING_FRAMES + segments
+
+
+async def test_a_looping_replay_never_reports_a_terminal_status() -> None:
+    """A demo that still has to run must not tell the client it has stopped."""
+
+    frames = len(SCRIPTS["default"].segments) * 2       # a draft and a revision each
+
+    messages = await _take_frames(replay("default", speed=0, loop=True), _frames_for(frames * 3))
+
+    statuses = [m.data for m in messages if m.type == "status"]
+    assert statuses, "the viewer must be told the session is live"
+    assert all(status.status == "live" for status in statuses)
+
+
+async def test_a_looping_replay_repeats_its_content() -> None:
+    frames = len(SCRIPTS["default"].segments) * 2
+
+    messages = await _take_frames(replay("default", speed=0, loop=True), _frames_for(frames + 1))
+
+    segments = [m.data for m in messages if isinstance(m, SegmentMessage)]
+    first_pass, second_pass = segments[0], segments[frames]
+    assert second_pass.de == first_pass.de
+
+
+async def test_a_looping_replay_keeps_the_sequence_rising() -> None:
+    """A restarted sequence would reach nobody: the hub refuses anything at or below
+    what a client already holds, so pass two would be dropped as stale."""
+
+    lines = len(SCRIPTS["default"].segments)      # one sequence number per line
+    frames = lines * 2                            # a draft and a revision per line
+
+    messages = await _take_frames(replay("default", speed=0, loop=True), _frames_for(frames * 2))
+
+    segments = [m.data for m in messages if isinstance(m, SegmentMessage)]
+    assert len(segments) == frames * 2
+
+    # Both states of a line share its sequence number, so pairs must agree.
+    drafts, finals = segments[::2], segments[1::2]
+    assert all(
+        draft.seq == final.seq
+        for draft, final in zip(drafts, finals, strict=True)
+    )
+
+    # Two full passes, one number per line: 0..2*lines-1. The second pass carried on
+    # from the first instead of restarting at zero.
+    assert [draft.seq for draft in drafts] == list(range(lines * 2))
+
+
+async def test_a_viewer_watching_across_a_pass_boundary_sees_both_passes() -> None:
+    """The end-to-end version of the above, through the hub's own staleness rule."""
+
+    lines = len(SCRIPTS["default"].segments)      # one sequence number per line
+
+    hub = Hub()
+    subscriber = hub.subscribe(ClientRole.VIEWER)
+    stop = asyncio.Event()
+    publisher = SimPublisher(script="default", speed=0, loop=True)
+    task = asyncio.create_task(publisher.run(hub, session_id="test", stop=stop))
+
+    seqs: list[int] = []
+    try:
+        # Keep reading until a number from the second pass has arrived.
+        while len(set(seqs)) <= lines:
+            batch = await asyncio.wait_for(subscriber.mailbox.receive(), timeout=2.0)
+            seqs.extend(m.data.seq for m in batch if isinstance(m, SegmentMessage))
+    finally:
+        # A looping publisher outlives the test, so it must be stopped even when an
+        # assertion above has already failed.
+        stop.set()
+        await asyncio.wait_for(task, timeout=2.0)
+
+    assert max(seqs) >= lines, "the second pass never reached the viewer"
+
+
+def test_serving_the_simulation_loops_by_default() -> None:
+    """What `--serve` gets, and what `--once` turns off."""
+
+    settings = Settings(_env_file=None)
+
+    publisher = build_approach("sim", settings, {})
+    assert isinstance(publisher, SimPublisher)
+    assert publisher.loop
+
+    once = build_approach("sim", settings, {"loop": "false"})
+    assert isinstance(once, SimPublisher)
+    assert not once.loop
