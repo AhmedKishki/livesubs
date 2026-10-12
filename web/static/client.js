@@ -81,6 +81,10 @@ export class ViewerClient {
     const receivedAt = performance.now();
 
     switch (message.type) {
+      case "ping":
+        this.send({ type: "pong" });
+        break;
+
       case "hello":
         this.onHello?.(message.data);
         break;

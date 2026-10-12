@@ -44,7 +44,7 @@ livesubs
 4. Open the printed landing-page URL and display its QR code.
 5. Attendees join the same network and scan the code to read German subtitles on their phones.
 
-Keep the terminal running during the session. Press Ctrl-C to stop.
+Transcription and translation run while a viewer is connected and pause when the last viewer disconnects. Keep the terminal running during the session. Press Ctrl-C to stop.
 
 ## Planned language support
 

@@ -26,7 +26,7 @@
 
 ## Concurrency and ordering
 
-- Startup prepares capture, calls the translator's `warm()`, and opens recognition before consuming the first pipeline frame.
+- Startup prepares capture. Paid recognition and translation start with the first viewer and pause with the last disconnect. Capture and its archive clock continue while idle; those frames are not buffered for later recognition.
 - Capture reads frames and feeds ingest. It never publishes.
 - One publisher task translates committed segments in order and assigns their revisions.
 - Capture pushes each frame to ASR before updating the segmenter, without waiting for recognition responses.

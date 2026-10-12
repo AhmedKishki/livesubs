@@ -133,7 +133,8 @@ def build_router(settings: Settings) -> APIRouter:
                 "name": session.name,
                 "language": session.language,
                 "version": EVENT_VERSION,
-                "viewers": session.hub.subscriber_count,
+                "viewers": session.hub.viewer_count,
+                "connections": session.hub.subscriber_count,
                 "running": session.running,
                 "uptime_s": round(session.uptime_s, 1),
                 "ws_url": f"/ws/{session.id}",
@@ -191,7 +192,8 @@ def build_router(settings: Settings) -> APIRouter:
             {
                 "ok": bool(session and session.running),
                 "session": settings.session_id,
-                "viewers": session.hub.subscriber_count if session else 0,
+                "viewers": session.hub.viewer_count if session else 0,
+                "connections": session.hub.subscriber_count if session else 0,
             }
         )
 

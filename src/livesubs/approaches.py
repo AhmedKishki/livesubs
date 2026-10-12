@@ -426,12 +426,22 @@ def _build_live(settings: Settings, options: ApproachOptions) -> SegmentPublishe
 
     capture, recorder = artefacts(settings, capture_source(settings, options))
 
+    # The providers are constructed here so a missing key or adapter still fails at
+    # startup rather than when the first viewer arrives. The audience gate means they
+    # are opened (and the translator warmed) only once a viewer connects, and the
+    # factory builds a fresh recogniser for each later audience session so no closed
+    # adapter's send queue is replayed.
+    initial_asr = build_asr(settings)
+    initial_mt = build_mt(settings)
+
     return LivePipeline(
         source=capture,
-        asr=build_asr(settings),
-        mt=build_mt(settings),
+        asr=initial_asr,
+        asr_factory=lambda: build_asr(settings),
+        mt=initial_mt,
         config=pipeline_config(settings),
         on_segment=recorder,
+        require_audience=True,
     )
 
 
@@ -462,12 +472,17 @@ def _build_live_text(settings: Settings, options: ApproachOptions) -> SegmentPub
 
     capture, recorder = artefacts(settings, capture_source(settings, options))
 
+    # The translator is billed, so this approach is gated like ``live``. The
+    # transcript input is rebuilt per audience session and realigned to the running
+    # audio clock, so a resumed run does not replay cues from inside the pause.
     return LivePipeline(
         source=capture,
         asr=TranscriptAsr(cues),
+        asr_factory=lambda: TranscriptAsr(cues),
         mt=build_mt(settings),
         config=pipeline_config(settings),
         on_segment=recorder,
+        require_audience=True,
     )
 
 

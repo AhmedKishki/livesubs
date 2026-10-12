@@ -80,6 +80,32 @@ def test_pushing_before_open_is_refused() -> None:
         asyncio.run(TranscriptAsr([]).push(FRAME))
 
 
+def test_seek_skips_cues_that_fell_inside_a_pause() -> None:
+    """A resumed run must not replay cues the room already heard.
+
+    The pipeline keeps capturing across an audience pause, so a freshly opened
+    adapter is aligned to the running audio clock by ``seek``; every cue before that
+    point is dropped rather than emitted late in a burst.
+    """
+
+    adapter = TranscriptAsr(
+        [Cue(0, 500, "heard"), Cue(3000, 3500, "missed in the pause"), Cue(5000, 5500, "next")]
+    )
+
+    async def run() -> list[AsrEvent]:
+        await adapter.open(AsrConfig())
+        adapter.seek(4000)
+        events: list[AsrEvent] = []
+        collector = asyncio.create_task(_drain_collect(adapter, events))
+        for _ in range(75):                             # 1500 ms: 4000 -> 5500 ms
+            await adapter.push(FRAME)
+        await adapter.close()
+        await asyncio.wait_for(collector, timeout=2)
+        return events
+
+    assert [event.text for event in asyncio.run(run())] == ["next"]
+
+
 def test_the_event_stream_ends_when_the_adapter_is_closed() -> None:
     """The pipeline's collector relies on the stream ending, or shutdown hangs."""
 

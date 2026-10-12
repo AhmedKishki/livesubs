@@ -12,7 +12,8 @@ license-files = ["LICENSE"]
 # inference happens at the API edge. onnxruntime is CPU-only and is used
 # solely for an optional Silero VAD.
 dependencies = [
-    "fastapi>=0.115",
+  "anyio>=4.4",
+  "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",

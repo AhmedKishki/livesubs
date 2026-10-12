@@ -56,7 +56,7 @@ class MtProvider(Protocol):
     def healthy(self) -> bool: ...
 ```
 
-- The pipeline calls `warm()` before recognition opens. A provider's cache warm-up is best-effort, not a latency guarantee.
+- Live modes call `warm()` before recognition opens for the first connected viewer, not while the audience is empty. A provider's cache warm-up is best-effort, not a latency guarantee.
 - `translate` yields text deltas. The publisher accumulates them into draft revisions, then publishes a final translation.
 - Any OpenAI-compatible endpoint is accepted for MT when the provider declares `options.adapter: openai_compat`. Without that declaration the provider is refused rather than guessed at.
 

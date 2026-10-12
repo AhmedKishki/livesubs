@@ -9,13 +9,14 @@ chatty client filling the receive buffer.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 
+import anyio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from livesubs.config import Settings
+from livesubs.events import EVENT_VERSION
 from livesubs.hub import ClientRole, Hub, Subscriber
 
 __all__ = ["build_router"]
@@ -24,6 +25,8 @@ logger = logging.getLogger(__name__)
 
 #: Application-defined close code for an unknown session.
 WS_UNKNOWN_SESSION = 4404
+HEARTBEAT_INTERVAL_S = 10.0
+CLIENT_IDLE_TIMEOUT_S = 30.0
 
 
 def _role_from(value: str | None) -> ClientRole:
@@ -36,7 +39,11 @@ async def _pump(websocket: WebSocket, hub: Hub, subscriber: Subscriber) -> None:
     """Send whatever the mailbox considers current, for as long as it is open."""
 
     while True:
-        batch = await subscriber.mailbox.receive()
+        with anyio.move_on_after(HEARTBEAT_INTERVAL_S) as heartbeat:
+            batch = await subscriber.mailbox.receive()
+        if heartbeat.cancel_called:
+            await websocket.send_text(json.dumps({"v": EVENT_VERSION, "type": "ping"}))
+            continue
         if not batch:
             return
 
@@ -48,7 +55,12 @@ async def _read_acks(websocket: WebSocket, session_id: str) -> None:
     """Consume client messages until the socket closes."""
 
     while True:
-        raw = await websocket.receive_text()
+        try:
+            with anyio.fail_after(CLIENT_IDLE_TIMEOUT_S):
+                raw = await websocket.receive_text()
+        except TimeoutError:
+            await websocket.close(code=1001, reason="heartbeat timeout")
+            return
 
         try:
             payload = json.loads(raw)
@@ -87,9 +99,21 @@ def build_router(settings: Settings) -> APIRouter:
         subscriber = session.hub.subscribe(role)
 
         try:
-            async with asyncio.TaskGroup() as group:
-                group.create_task(_pump(websocket, session.hub, subscriber))
-                group.create_task(_read_acks(websocket, session_id))
+            async with anyio.create_task_group() as group:
+                async def send() -> None:
+                    try:
+                        await _pump(websocket, session.hub, subscriber)
+                    finally:
+                        group.cancel_scope.cancel()
+
+                async def receive() -> None:
+                    try:
+                        await _read_acks(websocket, session_id)
+                    finally:
+                        group.cancel_scope.cancel()
+
+                group.start_soon(send)
+                group.start_soon(receive)
         except* (WebSocketDisconnect, ConnectionError):
             pass
         except* RuntimeError:

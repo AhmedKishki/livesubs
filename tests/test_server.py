@@ -19,6 +19,7 @@ from livesubs.config import Settings
 from livesubs.events import SegmentState, SubtitleSegment, Timing
 from livesubs.hub import Hub
 from livesubs.server import create_app, routes
+from livesubs.server import ws as websocket_routes
 
 TICK_S = 0.05
 
@@ -301,6 +302,49 @@ def test_viewer_count_reflects_connected_sockets() -> None:
             assert client.get("/healthz").json()["viewers"] == 1
 
         # After the context manager exits the socket is closed and unsubscribed.
+        assert client.get("/healthz").json()["viewers"] == 0
+
+
+def test_admin_connection_is_not_counted_as_an_audience() -> None:
+    """An operator console must not look like a viewing device.
+
+    The gate that pauses paid transcription and translation keys off the viewer
+    count, so an admin-only connection must leave it at zero.
+    """
+
+    with make_client() as client, client.websocket_connect("/ws/demo?role=admin") as ws:
+        next_message_of_type(ws, "segment")
+        payload = client.get("/healthz").json()
+        assert payload["viewers"] == 0
+        assert payload["connections"] == 1
+
+
+class IdlePublisher:
+    async def run(self, hub, *, session_id, stop):
+        await stop.wait()
+
+
+def test_idle_client_answers_heartbeats_and_remains_connected(monkeypatch) -> None:
+    monkeypatch.setattr(websocket_routes, "HEARTBEAT_INTERVAL_S", 0.01)
+    monkeypatch.setattr(websocket_routes, "CLIENT_IDLE_TIMEOUT_S", 0.1)
+    with make_client(IdlePublisher()) as client, client.websocket_connect("/ws/demo") as ws:
+        next_message_of_type(ws, "hello")
+        for _ in range(5):
+            next_message_of_type(ws, "ping")
+            ws.send_json({"type": "pong"})
+        assert client.get("/healthz").json()["viewers"] == 1
+
+
+def test_unresponsive_client_is_disconnected_and_removed(monkeypatch) -> None:
+    monkeypatch.setattr(websocket_routes, "HEARTBEAT_INTERVAL_S", 0.01)
+    monkeypatch.setattr(websocket_routes, "CLIENT_IDLE_TIMEOUT_S", 0.05)
+    with make_client(IdlePublisher()) as client:
+        with client.websocket_connect("/ws/demo") as ws:
+            next_message_of_type(ws, "hello")
+            with pytest.raises(WebSocketDisconnect) as error:
+                while True:
+                    ws.receive_json()
+            assert error.value.code == 1001
         assert client.get("/healthz").json()["viewers"] == 0
 
 

@@ -80,13 +80,15 @@
 - The snapshot then sends the current `status`, followed by the current segment when one exists.
 - A join before the first segment has no text to display yet.
 - After a disconnect, the viewer retries with backoff and receives another snapshot when the connection succeeds.
+- Idle sockets receive a heartbeat every 10 seconds. Clients reply with `pong`; a client silent for 30 seconds is disconnected and no longer counts toward provider demand.
 
 ## Operator console
 
 - `/admin` shows English recognition output and German translation side by side for comparison.
 - It shows the segment history of committed lines.
 - It shows the pipeline status.
-- It polls the connection count about once a second. The count includes operator connections.
+- It polls the viewer count about once a second. Operator connections do not count as viewers or keep paid processing active.
+- `/api/session` and `/healthz` report `viewers` separately from total `connections`.
 - Its render duration measures handling in the operator's own browser, not a viewer's end-to-end latency.
 - A dropped-count field exists, but viewer acknowledgements are not routed to it and it remains unpopulated.
 - The landing page does not link to `/admin`. The operator role still has no authentication.

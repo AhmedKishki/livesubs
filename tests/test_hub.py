@@ -246,3 +246,96 @@ async def test_errors_reach_admins_but_not_viewers() -> None:
     admin_messages = await asyncio.wait_for(admin.mailbox.receive(), timeout=1.0)
     assert any(isinstance(m, ErrorMessage) for m in admin_messages)
     assert viewer.mailbox.has_pending is False
+
+
+# --- audience accounting, which decides paid work ------------------------------
+
+
+def test_viewer_count_excludes_admins() -> None:
+    """An operator console is not an audience and must not create provider demand."""
+
+    hub = Hub()
+    hub.subscribe(ClientRole.ADMIN)
+    hub.subscribe(ClientRole.ADMIN)
+
+    assert hub.viewer_count == 0
+    assert hub.has_viewers is False
+
+    viewer = hub.subscribe(ClientRole.VIEWER)
+    assert hub.viewer_count == 1
+    assert hub.has_viewers is True
+
+    hub.unsubscribe(viewer)
+    assert hub.viewer_count == 0
+    assert hub.has_viewers is False
+
+
+def test_forget_segment_snapshot_drops_the_cached_line() -> None:
+    """A paused lecture must not seed the next viewer with its stale last line."""
+
+    hub = Hub()
+    hub.publish_segment(_seg(seq=5, rev=0))
+
+    assert hub._latest_segment is not None
+    hub.forget_segment_snapshot()
+    assert hub._latest_segment is None
+
+    # A joiner after the reset is not handed the old line.
+    subscriber = hub.subscribe(ClientRole.VIEWER)
+    assert subscriber.mailbox.has_pending is False
+
+
+
+def test_gated_hub_does_not_cache_a_segment_arriving_with_no_viewers() -> None:
+    """A late translation must not seed the next viewer with text nobody watched."""
+
+    hub = Hub()
+    hub.enable_audience_gating()
+    hub.publish_segment(_seg(seq=3))
+    assert hub._latest_segment is None
+
+
+def test_ungated_hub_still_caches_with_no_viewers() -> None:
+    """The non-gated replay keeps its snapshot behaviour across a reconnect."""
+
+    hub = Hub()
+    hub.publish_segment(_seg(seq=3))
+    assert hub._latest_segment is not None
+
+
+def test_demand_generation_advances_only_on_a_presence_change() -> None:
+    """A second viewer is not a new occupancy; an admin is not demand at all."""
+
+    hub = Hub()
+    assert hub.demand_generation == 0
+
+    first = hub.subscribe(ClientRole.VIEWER)
+    assert hub.demand_generation == 1
+
+    second = hub.subscribe(ClientRole.VIEWER)
+    assert hub.demand_generation == 1          # still just "some viewers"
+
+    hub.subscribe(ClientRole.ADMIN)
+    assert hub.demand_generation == 1          # admin adds no demand
+
+    hub.unsubscribe(first)
+    assert hub.demand_generation == 1          # second viewer still present
+
+    hub.unsubscribe(second)
+    assert hub.demand_generation == 2          # crossed back to none
+
+    hub.subscribe(ClientRole.VIEWER)
+    assert hub.demand_generation == 3          # a fresh occupancy
+
+
+async def test_wait_for_demand_change_wakes_on_a_viewer_connect() -> None:
+    """The watcher is notified by the connect itself, not by the next frame."""
+
+    hub = Hub()
+    generation = hub.demand_generation
+    waiter = asyncio.create_task(hub.wait_for_demand_change(generation))
+    await asyncio.sleep(0)
+    assert not waiter.done()
+
+    hub.subscribe(ClientRole.VIEWER)
+    assert await asyncio.wait_for(waiter, timeout=1.0) == generation + 1

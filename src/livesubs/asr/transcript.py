@@ -64,6 +64,19 @@ class TranscriptAsr:
         self._next = 0
         self._queue = asyncio.Queue()
 
+    def seek(self, audio_ms: int) -> None:
+        """Align this transcript with an audio clock that ran while it was closed.
+
+        The pipeline keeps capturing across an audience pause, so a freshly opened
+        adapter would otherwise start from zero and replay cues that the room has
+        already heard. Skipping every cue that begins at or before ``audio_ms`` keeps
+        a resumed run in step with the audio and free of stale replay.
+        """
+
+        self._consumed_ms = max(self._consumed_ms, audio_ms)
+        while self._next < len(self.cues) and self.cues[self._next].start_ms <= self._consumed_ms:
+            self._next += 1
+
     async def push(self, pcm: bytes) -> None:
         """Advance the clock and queue whatever the transcript says by now.
 

@@ -215,9 +215,107 @@ class Hub:
         self._latest_segment: SubtitleSegment | None = None
         self._latest_status: StatusPayload | None = None
 
+        #: Whether a pipeline is driving paid work from this hub's audience. Off by
+        #: default so a non-gated replay keeps its cached line across a reconnect.
+        self._audience_gating = False
+        #: Presence, not count: the generation advances only when the audience crosses
+        #: between none and some, so a second viewer is not mistaken for a fresh one.
+        self._demand_present = False
+        self._demand_generation = 0
+        self._demand_event = asyncio.Event()
+
+    def enable_audience_gating(self) -> None:
+        """Mark this hub as driving paid work.
+
+        With gating on, the cached line is dropped the instant the last viewer leaves,
+        so a fast reconnect cannot be seeded with a stale or unfinished line. A
+        non-gated replay leaves it off and keeps its snapshot behaviour.
+        """
+
+        self._audience_gating = True
+
     @property
     def subscriber_count(self) -> int:
         return len(self._subscribers)
+
+    @property
+    def viewer_count(self) -> int:
+        """Connected *viewing* devices, which is what creates paid provider demand.
+
+        Admins are deliberately excluded. An operator console is not an audience, and
+        an admin connection must never by itself make the pipeline open or keep open a
+        billed ASR stream or warm a billed translator on an empty room.
+        """
+
+        return sum(
+            1 for subscriber in self._subscribers.values()
+            if subscriber.role is ClientRole.VIEWER
+        )
+
+    @property
+    def has_viewers(self) -> bool:
+        return self.viewer_count > 0
+
+    @property
+    def demand_generation(self) -> int:
+        """A revision that advances only when the audience crosses zero.
+
+        A consumer records the value when it starts paid work and can tell, with no
+        dependence on audio frames, whether the audience it opened for is still the
+        current one. Going to zero and back produces a new value, so a fast reconnect
+        invalidates any attempt that belonged to the previous occupancy.
+        """
+
+        return self._demand_generation
+
+    async def wait_for_demand_change(
+        self, generation: int, timeout: float | None = None
+    ) -> int:
+        """Wait until the audience generation differs from ``generation``.
+
+        Wakes on the actual connect/disconnect, not on the next captured frame, which
+        is what lets paid work be cancelled even when capture has stalled. Returns the
+        current generation, or the same one after ``timeout`` if it did not change.
+        """
+
+        while self._demand_generation == generation:
+            event = self._demand_event
+            if self._demand_generation != generation:
+                break
+            if timeout is None:
+                await event.wait()
+            else:
+                try:
+                    await asyncio.wait_for(event.wait(), timeout=timeout)
+                except TimeoutError:
+                    break
+        return self._demand_generation
+
+    def forget_segment_snapshot(self) -> None:
+        """Drop the cached current line.
+
+        Called when the audience leaves: the cached line belongs to a lecture that is
+        now paused, and seeding the next viewer with it would replay stale or
+        unfinished text that no longer describes what is on screen.
+        """
+
+        self._latest_segment = None
+
+    def _note_demand(self) -> None:
+        """Advance the generation and wake waiters when audience presence flips.
+
+        Called synchronously from :meth:`subscribe` and :meth:`unsubscribe`, both of
+        which run on the event loop. Only a presence change counts, so a second viewer
+        joining does not look like a new occupancy to an in-flight open.
+        """
+
+        present = self.has_viewers
+        if present == self._demand_present:
+            return
+        self._demand_present = present
+        self._demand_generation += 1
+        previous, self._demand_event = self._demand_event, asyncio.Event()
+        previous.set()
 
     def subscribe(self, role: ClientRole) -> Subscriber:
         """Register a client and seed its snapshot immediately.
@@ -242,17 +340,34 @@ class Hub:
         if self._latest_segment is not None:
             subscriber.mailbox.offer(SegmentMessage(data=self._latest_segment))
 
+        if role is ClientRole.VIEWER:
+            self._note_demand()
+
         return subscriber
 
     def unsubscribe(self, subscriber: Subscriber) -> None:
         self._subscribers.pop(subscriber.id, None)
         subscriber.mailbox.close()
 
+        if subscriber.role is not ClientRole.VIEWER:
+            return
+
+        # Clear synchronously, before the event loop can run a reconnect handler:
+        # otherwise a viewer that leaves and returns within one frame would be seeded
+        # with the previous line the moment it subscribes.
+        if self._audience_gating and not self.has_viewers:
+            self._latest_segment = None
+
+        self._note_demand()
+
     def publish(self, message: WireMessage) -> None:
         """Synchronous, non-blocking, safe to call from the pipeline's hot path."""
 
         if isinstance(message, SegmentMessage):
-            self._latest_segment = message.data
+            # Never cache a line that arrived after the audience left: a late
+            # translation must not seed the next viewer with text nobody watched.
+            if not (self._audience_gating and not self.has_viewers):
+                self._latest_segment = message.data
             self.encode(message)          # pay for one encoding, not one per viewer
         elif isinstance(message, StatusMessage):
             self._latest_status = message.data
