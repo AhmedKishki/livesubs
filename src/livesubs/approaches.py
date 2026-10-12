@@ -214,13 +214,20 @@ def capture_source(settings: Settings, options: ApproachOptions) -> AudioSource:
 
 
 def artefacts(
-    settings: Settings, source: AudioSource
+    settings: Settings,
+    source: AudioSource,
+    *,
+    extra_target_codes: tuple[str, ...] = (),
 ) -> tuple[AudioSource, Callable[[object], None] | None]:
     """Wrap a capture source with the session's recording and subtitle files.
 
     Shared by every approach that captures audio, so a change to how a session is archived
     cannot apply to one approach and not another. One stem for every artefact, so the
     recording and the subtitle files that describe it pair up by name.
+
+    ``extra_target_codes`` adds target-language sidecars beyond the configured one, so an
+    Arabic session writes ``.ar.srt``/``.ar.vtt`` alongside the German files. The English
+    source is written once, by the German stream, so the extra files do not duplicate it.
     """
 
     from livesubs.audio.archive import ArchivedSource, recording_stem
@@ -240,6 +247,7 @@ def artefacts(
             stem=stem,
             source_code="en",
             target_code=settings.language,
+            extra_target_codes=extra_target_codes,
         )
 
     return source, recorder
@@ -307,13 +315,18 @@ def build_asr(settings: Settings) -> AsrProvider:
     )
 
 
-def build_mt(settings: Settings) -> MtProvider:
+def build_mt(settings: Settings, target_language: str = "de") -> MtProvider:
     """The translator for whichever provider is active for the MT role.
 
     Any OpenAI-compatible endpoint is accepted, which is what lets a deployment point the
     translator at a model on its own machine. A declared provider must say so with
     ``options.adapter: openai_compat``: without it, the provider is refused rather than
     guessed at, because the cost of guessing is sending text to the wrong wire format.
+
+    ``target_language`` selects the frozen prompt and the target text. It defaults to
+    German, so every existing caller is unchanged; ``"ar"`` builds the same provider and
+    transport with the Arabic prompt, needing no second credential and no global settings
+    mutation.
     """
 
     from livesubs.mt.openai_compat import OpenAiCompatMt
@@ -343,6 +356,7 @@ def build_mt(settings: Settings) -> MtProvider:
         # twenty before its first token, so the timeout is the deployment's to set. The
         # default is a hosted model's, because that is what the shipped providers are.
         timeout_s=float(settings.provider_option(provider.name, "timeout_s") or 20.0),
+        target_language=target_language,
     )
 
 
@@ -424,7 +438,9 @@ def _build_live(settings: Settings, options: ApproachOptions) -> SegmentPublishe
 
     from livesubs.pipeline import LivePipeline
 
-    capture, recorder = artefacts(settings, capture_source(settings, options))
+    capture, recorder = artefacts(
+        settings, capture_source(settings, options), extra_target_codes=("ar",)
+    )
 
     # The providers are constructed here so a missing key or adapter still fails at
     # startup rather than when the first viewer arrives. The audience gate means they
@@ -439,6 +455,10 @@ def _build_live(settings: Settings, options: ApproachOptions) -> SegmentPublishe
         asr=initial_asr,
         asr_factory=lambda: build_asr(settings),
         mt=initial_mt,
+        # The Arabic translator is built lazily, only while an Arabic viewer is present,
+        # and shares the German provider and credential. No Arabic provider is
+        # constructed or warmed for a German-only lecture.
+        mt_ar_factory=lambda: build_mt(settings, "ar"),
         config=pipeline_config(settings),
         on_segment=recorder,
         require_audience=True,
@@ -470,7 +490,9 @@ def _build_live_text(settings: Settings, options: ApproachOptions) -> SegmentPub
     if not cues:
         raise ValueError(f"{cues_path} contains no cues")
 
-    capture, recorder = artefacts(settings, capture_source(settings, options))
+    capture, recorder = artefacts(
+        settings, capture_source(settings, options), extra_target_codes=("ar",)
+    )
 
     # The translator is billed, so this approach is gated like ``live``. The
     # transcript input is rebuilt per audience session and realigned to the running
@@ -480,6 +502,9 @@ def _build_live_text(settings: Settings, options: ApproachOptions) -> SegmentPub
         asr=TranscriptAsr(cues),
         asr_factory=lambda: TranscriptAsr(cues),
         mt=build_mt(settings),
+        # Arabic is opt-in and shares the German provider; it is built only while an
+        # Arabic viewer is present.
+        mt_ar_factory=lambda: build_mt(settings, "ar"),
         config=pipeline_config(settings),
         on_segment=recorder,
         require_audience=True,

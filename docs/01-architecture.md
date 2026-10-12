@@ -15,7 +15,8 @@
   [ SEGMENTER ]  silence >= endpoint_silence_ms OR elapsed >= max_segment_ms
         |        commits the newest ASR text as one segment
         v
-  [ MT ]         streaming adapter, draft revisions then final
+  [ MT de ]      ordered German stream, active only with German viewers
+  [ MT ar ]      parallel ordered Arabic stream, active only with Arabic viewers
         |
         v
   [ HUB ]        WebSocket fan-out, seq/rev revision protocol, src stripped for viewers
@@ -28,7 +29,7 @@
 
 - Startup prepares capture. Paid recognition and translation start with the first viewer and pause with the last disconnect. Capture and its archive clock continue while idle; those frames are not buffered for later recognition.
 - Capture reads frames and feeds ingest. It never publishes.
-- One publisher task translates committed segments in order and assigns their revisions.
+- One ASR stream and segmenter feed independent ordered German and Arabic translation workers. Each language has its own context, queue and revision counter, so a slow Arabic request does not block German.
 - Capture pushes each frame to ASR before updating the segmenter, without waiting for recognition responses.
 - Ingest uses a sample-derived clock. File acceleration changes wall-clock pacing, not the underlying audio timestamps.
 
@@ -39,11 +40,11 @@
 | Ingest | PCM frames | Speech flag, levels, audio clock |
 | Segmenter | Speech flag, provider endpointing, cap | Emit decision and the committed source text |
 | ASR | Every PCM frame | Partial and final English text, word timings |
-| MT | One committed source segment plus context | Streaming German text |
+| MT | One committed source segment plus target-specific context | Streaming German or Arabic text |
 | Hub | Revisions | One JSON envelope per message per viewer |
 
 - The publisher commits the newest available ASR text when a segment emits. Later ASR updates do not change that committed source.
-- MT starts after source commitment and publishes draft revisions as German text accumulates.
+- MT starts after source commitment and publishes draft revisions as target text accumulates. A target without viewers is not warmed or called.
 
 ## Latency budget
 

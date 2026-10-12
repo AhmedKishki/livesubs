@@ -82,12 +82,31 @@ class Timing(BaseModel):
 
 
 class SubtitleSegment(BaseModel):
-    """One subtitle line, at one revision."""
+    """One subtitle line, at one revision.
+
+    A segment belongs to exactly one target language. A German segment carries
+    ``language="de"`` and its text in ``de``; an Arabic segment carries
+    ``language="ar"`` and its text in ``ar``, with ``de`` left empty. The two
+    streams are ordered independently and a subscriber only ever receives the
+    languages its role is allowed to see, so the fields are never mixed on the
+    wire.
+
+    ``ar`` is ``None`` on a German segment, which keeps the added field additive:
+    an older client that ignores ``language``/``ar`` still renders German.
+    """
 
     seq: int = Field(ge=0)
     rev: int = Field(default=0, ge=0)
     state: SegmentState = SegmentState.DRAFT
-    de: str = Field(description="German text - the only text the viewer renders")
+    language: Literal["de", "ar"] = Field(
+        default="de", description="Which target stream this segment belongs to"
+    )
+    de: str = Field(
+        default="", description="German text; empty on an Arabic-only segment"
+    )
+    ar: str | None = Field(
+        default=None, description="Arabic text; only present when language is 'ar'"
+    )
     src: str | None = Field(default=None, description="English source; operator console only")
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     words: list[WordTiming] | None = None

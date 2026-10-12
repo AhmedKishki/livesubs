@@ -6,12 +6,14 @@
 | --- | --- | --- |
 | `/` | attendees | landing page with the QR code, join instructions and session name |
 | `/s/{session_id}` | attendees | the subtitle page, and the QR target |
+| `/s/{session_id}?lang=ar` | attendees requesting Arabic | the Arabic subtitle page |
 | `/admin` | operator | current source and German text, final-line history, status, connection count and local render duration |
 | `/ws/{session_id}` | viewer and operator pages | WebSocket for `segment`, `status`, `hello` and `error` messages |
 | `/qr.png` | landing page | rendered QR for the current session |
 
 - The QR encodes the resolved viewer URL, for example `http://192.168.1.42:8000/s/7f3a`.
 - The default server uses plain HTTP. The viewer needs no microphone permission because capture happens server-side.
+- The default WebSocket role is `viewer` for German. Arabic requests use `viewer_ar`; neither role receives English source text or the other translation. Unsupported Arabic sessions reject the request with close code `4403`.
 
 ### Address selection
 

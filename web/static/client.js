@@ -8,6 +8,23 @@
 const RECONNECT_MIN_MS = 500;
 const RECONNECT_MAX_MS = 10_000;
 
+//: Application close codes the server uses for a client it will never serve:
+//: 4404 is an unknown session, 4403 is a language this session cannot produce.
+//: Both are permanent for this connection, so retrying only spins. Matches
+//: `WS_UNKNOWN_SESSION` and `WS_UNSUPPORTED_LANGUAGE` in src/livesubs/server/ws.py.
+const FATAL_CLOSE_CODES = new Set([4403, 4404]);
+
+export function bindPageLifecycle(client, page = window) {
+  const hide = () => client.stop();
+  const show = (event) => { if (event.persisted) client.start(); };
+  page.addEventListener("pagehide", hide);
+  page.addEventListener("pageshow", show);
+  return () => {
+    page.removeEventListener("pagehide", hide);
+    page.removeEventListener("pageshow", show);
+  };
+}
+
 export class ViewerClient {
   constructor({
     sessionId,
@@ -17,6 +34,7 @@ export class ViewerClient {
     onHello = null,
     onStatus = null,
     onError = null,
+    onClose = null,
   }) {
     this.sessionId = sessionId;
     this.role = role;
@@ -25,10 +43,17 @@ export class ViewerClient {
     this.onHello = onHello;
     this.onStatus = onStatus;
     this.onError = onError;
+    //: Called with the close code when the server refuses permanently, so the
+    //: page can explain the refusal instead of retrying forever.
+    this.onClose = onClose;
 
     this._socket = null;
     this._backoff = RECONNECT_MIN_MS;
     this._stopped = false;
+    //: Pending reconnect timer. Kept so `stop()` can cancel it; otherwise a
+    //: stopped client would still open a socket when the timer fired, which is
+    //: a leaked connection that outlives the page state that wanted it.
+    this._reconnectTimer = null;
   }
 
   get url() {
@@ -43,6 +68,10 @@ export class ViewerClient {
 
   stop() {
     this._stopped = true;
+    if (this._reconnectTimer !== null) {
+      window.clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
     this._socket?.close();
     this._socket = null;
   }
@@ -54,6 +83,8 @@ export class ViewerClient {
   }
 
   _open() {
+    if (this._stopped) return;
+
     const socket = new WebSocket(this.url);
     this._socket = socket;
 
@@ -65,7 +96,7 @@ export class ViewerClient {
 
     // No error handling beyond this: a WebSocket error is always followed by a
     // close, which is where reconnection belongs.
-    socket.addEventListener("close", () => this._scheduleReconnect());
+    socket.addEventListener("close", (event) => this._onClose(event));
   }
 
   _dispatch(event) {
@@ -107,12 +138,31 @@ export class ViewerClient {
     }
   }
 
+  _onClose(event) {
+    this._socket = null;
+    if (this._stopped) return;
+
+    // A refusal is not a disconnect. Reconnecting to a session the server has
+    // already rejected would spin the backoff loop forever and, for 4403, keep
+    // announcing demand for a language that can never arrive.
+    if (FATAL_CLOSE_CODES.has(event?.code)) {
+      this._stopped = true;
+      this.onClose?.(event.code);
+      return;
+    }
+
+    this._scheduleReconnect();
+  }
+
   _scheduleReconnect() {
     this._socket = null;
     if (this._stopped) return;
 
     const delay = this._backoff;
     this._backoff = Math.min(RECONNECT_MAX_MS, this._backoff * 2);
-    window.setTimeout(() => this._open(), delay);
+    this._reconnectTimer = window.setTimeout(() => {
+      this._reconnectTimer = null;
+      this._open();
+    }, delay);
   }
 }

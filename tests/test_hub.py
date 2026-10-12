@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 
 from livesubs.events import (
     ErrorMessage,
@@ -18,6 +19,7 @@ from livesubs.events import (
     Stage,
     SubtitleSegment,
     Timing,
+    WordTiming,
 )
 from livesubs.hub import ClientRole, Hub
 
@@ -38,6 +40,45 @@ def _seg(
         src=src,
         timing=Timing(audio_ms=seq * 2000, emit_ms=seq * 2000 + 400),
     )
+
+
+def test_viewer_roles_never_receive_source_word_timings() -> None:
+    hub = Hub()
+    german = hub.subscribe(ClientRole.VIEWER)
+    arabic = hub.subscribe(ClientRole.VIEWER_AR)
+    admin = hub.subscribe(ClientRole.ADMIN)
+    words = [WordTiming(text="private English source", start_ms=0, end_ms=100)]
+    for language in ("de", "ar"):
+        segment = SubtitleSegment(
+            seq=1, language=language, de="Deutsch", ar="العربية",
+            src="private English source", words=words,
+            timing=Timing(audio_ms=100, emit_ms=200),
+        )
+        hub.publish_segment(segment)
+    assert german.mailbox._segments["de"].words is None
+    assert arabic.mailbox._segments["ar"].words is None
+    assert admin.mailbox._segments["de"].words == words
+    assert admin.mailbox._segments["ar"].words == words
+
+
+async def test_encoding_admin_first_does_not_cache_private_fields_for_viewers() -> None:
+    for language, role in (("de", ClientRole.VIEWER), ("ar", ClientRole.VIEWER_AR)):
+        hub = Hub()
+        admin = hub.subscribe(ClientRole.ADMIN)
+        viewer = hub.subscribe(role)
+        segment = SubtitleSegment(
+            seq=1, language=language, src=None, de="Deutsch", ar="العربية",
+            words=[WordTiming(text="English source", start_ms=0, end_ms=100)],
+            timing=Timing(audio_ms=100, emit_ms=200),
+        )
+        hub.publish_segment(segment)
+        for message in await admin.mailbox.receive():
+            hub.encode(message)
+        messages = await viewer.mailbox.receive()
+        delivered = json.loads(hub.encode(messages[0]))["data"]
+        assert delivered["words"] is None
+        assert delivered["src"] is None
+        assert delivered["ar"] is None if language == "de" else delivered["de"] == ""
 
 
 async def _segments(mailbox) -> list[SubtitleSegment]:

@@ -11,7 +11,7 @@
 | `endpoint_silence_ms` | 350 | Close after this much trailing silence, once the minimum duration is met. |
 | `max_segment_ms` | 2000 | Close at this duration even during unbroken speech. |
 | `min_segment_ms` | 400 | Hold a shorter run despite a pause or endpoint. |
-| `context_segments` | 2 | Include this many previous English and German segments in MT context. |
+| `context_segments` | 2 | Include this many previous English and target-language segments in MT context. |
 | `trust_provider_endpointing` | true | Allow a provider endpoint to close a run. VAD remains a backstop. |
 
 ## Why 2 s
@@ -53,7 +53,7 @@
 
 ## Context carry
 
-- Each MT request includes up to `context_segments` previous English segments and their German translations.
+- Each MT request includes up to `context_segments` previous English segments and translations for that target language. German and Arabic contexts remain separate.
 - Previous context can help with references and terminology, but it cannot supply words that the speaker has not said yet.
 - Rolling context travels in the user message. The system prompt stays fixed during a session.
 

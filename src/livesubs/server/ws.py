@@ -23,16 +23,32 @@ __all__ = ["build_router"]
 
 logger = logging.getLogger(__name__)
 
-#: Application-defined close code for an unknown session.
+#: Application-defined close codes.
 WS_UNKNOWN_SESSION = 4404
+#: The client asked for a language this session cannot produce. Refused at the
+#: socket, before any demand is recorded or a billed provider is touched.
+WS_UNSUPPORTED_LANGUAGE = 4403
 HEARTBEAT_INTERVAL_S = 10.0
 CLIENT_IDLE_TIMEOUT_S = 30.0
 
+#: The exact query value that opts a client into Arabic. Anything else is German:
+#: an unknown or misspelled role must never silently grant a different language.
+_ARABIC_ROLE = "viewer_ar"
+
 
 def _role_from(value: str | None) -> ClientRole:
-    """Only ``admin`` gets the operator role; anything else is a viewer."""
+    """Map a ``role`` query value to a client role by exact match.
 
-    return ClientRole.ADMIN if value == "admin" else ClientRole.VIEWER
+    Only the exact string ``admin`` gets the operator role and only the exact string
+    ``viewer_ar`` opts into Arabic. Every unknown value is an ordinary German viewer,
+    so a typo cannot widen what a device receives.
+    """
+
+    if value == "admin":
+        return ClientRole.ADMIN
+    if value == _ARABIC_ROLE:
+        return ClientRole.VIEWER_AR
+    return ClientRole.VIEWER
 
 
 async def _pump(websocket: WebSocket, hub: Hub, subscriber: Subscriber) -> None:
@@ -92,6 +108,17 @@ def build_router(settings: Settings) -> APIRouter:
             return
 
         role = _role_from(websocket.query_params.get("role"))
+
+        # Refuse an Arabic request the publisher cannot serve *before* accepting or
+        # subscribing, so no demand is recorded and no billed provider is opened for
+        # a language that would never produce a line.
+        if role is ClientRole.VIEWER_AR and "ar" not in getattr(session, "languages", ("de",)):
+            await websocket.close(
+                code=WS_UNSUPPORTED_LANGUAGE,
+                reason="Arabic subtitles are not available for this session",
+            )
+            return
+
         await websocket.accept()
 
         # Subscribe *after* accept: the mailbox is seeded with a snapshot on

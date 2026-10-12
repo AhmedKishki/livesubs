@@ -39,6 +39,12 @@ function makeAdminView() {
 
   return {
     offer(segment, receivedAt) {
+      // The console keeps the German view. When the server sends both languages
+      // to an admin, an Arabic segment must not overwrite the live German line,
+      // advance its `seq`/`rev` display, or enter the history. The English
+      // `src` below is the source text, so the two columns stay source+German.
+      if ((segment.language ?? "de") !== "de") return;
+
       deEl.textContent = segment.de || "–";
       srcEl.textContent = segment.src || "(Quelle nicht verfügbar)";
       seqEl.textContent = `${segment.seq}.${segment.rev} ${segment.state}`;

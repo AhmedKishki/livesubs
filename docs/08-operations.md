@@ -70,7 +70,7 @@ sudo ufw allow 8000/tcp comment 'livesubs'
 | 5 | Latency acceptable | per-segment latency lines during rehearsal | no growing lag |
 | 6 | QR reachable | one phone, mobile data off | the page loads |
 | 7 | Providers verified | the launcher probe, or `uv run livesubs --set-key NAME --verify` | the provider accepts the key |
-| 8 | `warm()` completed | startup log | cache warmed before the first segment |
+| 8 | Requested target ready | connect its viewer and inspect output | The target warms on demand, not while there are no viewers. |
 | 9 | Archive recording | `recordings/` | a WAV file growing |
 | 10 | Power | laptop on mains, sleep disabled | none |
 
@@ -128,7 +128,7 @@ sudo ufw allow 8000/tcp comment 'livesubs'
 | Growing lag over minutes | translation backlog | inspect terminal timings, provider response times and host CPU load |
 | No viewer can connect | host firewall, wrong URL or WiFi isolation | test the printed LAN address, check the firewall, then try a network without isolation |
 | Some viewers connect, some not | weak WiFi or power saving | use the wired uplink and disable WiFi power saving |
-| First minute is poor, then fine | cache cold | confirm that `warm()` ran before the lecture |
+| Requested language starts slowly | cache cold or provider response time | Inspect request timings after connecting that language's viewer. |
 | German is grammatically odd | segments too short | raise `max_segment_ms` and check context carry |
 | German is over-condensed | segments too long | lower `max_segment_ms` |
 

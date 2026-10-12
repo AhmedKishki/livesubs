@@ -168,6 +168,7 @@ demo-20260922-150745.en.vtt
 ```
 
 - `capture.subtitles` enables the subtitle writer.
+- Requested Arabic translations also produce `.ar.srt` and `.ar.vtt` on the same audio clock. The English source file is currently written by the German stream, so Arabic-only sessions do not produce English source cues.
 - SRT and WebVTT are both produced because different tools consume them. Both come from one cue model, so they cannot disagree about timings.
 | Mode | English sidecar | MT sidecar |
 | --- | --- | --- |

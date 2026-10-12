@@ -56,7 +56,7 @@ class MtProvider(Protocol):
     def healthy(self) -> bool: ...
 ```
 
-- Live modes call `warm()` before recognition opens for the first connected viewer, not while the audience is empty. A provider's cache warm-up is best-effort, not a latency guarantee.
+- Each target translator calls `warm()` only when its language has viewer demand, before that target's first translation. Shared recognition does not wait for an unrelated target to warm. Cache warm-up is best-effort, not a latency guarantee.
 - `translate` yields text deltas. The publisher accumulates them into draft revisions, then publishes a final translation.
 - Any OpenAI-compatible endpoint is accepted for MT when the provider declares `options.adapter: openai_compat`. Without that declaration the provider is refused rather than guessed at.
 
@@ -73,6 +73,7 @@ class MtProvider(Protocol):
     "seq": 412,
     "rev": 2,
     "state": "draft",
+    "language": "de",
     "de": "…die Schwingung lässt sich durch…",
     "src": "…the oscillation can be described by…",
     "confidence": 0.94,
@@ -90,10 +91,11 @@ class MtProvider(Protocol):
 
 ### Field rules
 
-- `seq` is monotonic per session. `rev` starts at 0 for a new `seq`.
+- `seq` identifies a source segment. Each target language has its own monotonic `rev` sequence, starting at 0 for a new `seq`.
 - A newer `seq` is offered to display pacing, which can replace or drop it. A newer `rev` on the same `seq` updates the line in place.
-- `state` is `draft` or `final`. `final` means no further revisions for that `seq`, so the overlay may start its hold timer.
-- The hub removes English `src` from viewer messages. Operator messages retain it for comparison with the translation.
+- `state` is `draft` or `final`. `final` means no further revisions for that `(language, seq)`, so the overlay may start its hold timer.
+- `language` defaults to `de`; German text is in `de`, Arabic text in `ar`. Mailbox ordering, snapshots and encoding caches distinguish languages.
+- German viewers receive only German segments, and `viewer_ar` receives only Arabic segments. The server removes English source text, source word timings and the other target's text from both viewer roles. Operators retain source text.
 - `timing` carries monotonic millisecond timestamps. `audio_ms` is the end of the audio span, which is on the audio clock.
 - The admin console records a local `render` time from the moment a message arrived. A true client end-to-end `render_ms` round trip is not implemented, because server and client clocks are not synchronised.
 
@@ -101,8 +103,8 @@ class MtProvider(Protocol):
 
 | Condition | Implemented behaviour |
 | --- | --- |
-| transient socket close | the adapter stops its reader and marks itself unhealthy. It does not reconnect |
+| transient socket close | The adapter stops its reader. With viewer demand, the pipeline retries with a fresh recogniser and bounded backoff. |
 | repeated provider failure | a stage exception publishes `error` with that stage. The pipeline does not switch adapters |
 | translation returns empty | publish `error` for stage MT and drop the segment. English is never shown as a substitute |
 | provider cannot be built | a missing key or missing adapter raises at startup. There is no automatic stub fallback from `live` |
-| initial ASR auth failure | raises when the stream opens, before the first pipeline frame |
+| initial ASR auth failure | Raises during the connection attempt. No transcription is produced. |

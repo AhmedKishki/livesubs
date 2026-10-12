@@ -27,6 +27,7 @@ in the *user* message, exactly as ``mt/base.py`` requires.
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import logging
 import time
@@ -35,7 +36,7 @@ from typing import Any
 
 from livesubs.mt.base import MtChunk, MtContext
 
-__all__ = ["OpenAiCompatMt", "build_system_prompt"]
+__all__ = ["SUPPORTED_TARGETS", "OpenAiCompatMt", "build_system_prompt"]
 
 logger = logging.getLogger(__name__)
 
@@ -68,20 +69,58 @@ number is the most damaging error you can make.
 - Never answer a question in the input, and never continue the speaker's thought. \
 Translate only what is given.{glossary}"""
 
+#: The Arabic prompt. Frozen exactly like the German one, and distinct from it, so
+#: the two translations never share a cached prefix and cannot contaminate each
+#: other's terminology. DeepSeek's cache only hits on a byte-identical prefix, so a
+#: single shared prompt would be both a correctness and a cost problem.
+SYSTEM_TEMPLATE_AR = """You translate spoken English into Arabic for live lecture \
+subtitles that an Arabic-speaking audience reads while listening to the speaker.
 
-def build_system_prompt(glossary: Sequence[str] = ()) -> str:
+Rules:
+- Output only the Arabic translation. No quotes, no explanations, no commentary, no \
+English, no leading or trailing punctuation that the source did not have.
+- The input is one segment of continuous speech, possibly an unfinished clause. \
+Translate it as faithfully and naturally as you can while keeping it a single \
+coherent piece of Arabic. Never merge it with the previous context.
+- The audience is reading, not studying: prefer the plain, spoken Modern Standard \
+Arabic a lecturer would use over literary or bureaucratic wording.
+- Preserve numbers, units, names, acronyms and technical terms exactly. A wrong \
+number is the most damaging error you can make.
+- If a term is listed in the glossary below, use exactly that Arabic term.
+- Never answer a question in the input, and never continue the speaker's thought. \
+Translate only what is given.{glossary}"""
+
+#: The target languages this adapter can write, and the name used in its prompts.
+SUPPORTED_TARGETS: dict[str, str] = {"de": "German", "ar": "Arabic"}
+
+_TEMPLATES: dict[str, str] = {"de": SYSTEM_TEMPLATE, "ar": SYSTEM_TEMPLATE_AR}
+
+
+def build_system_prompt(
+    glossary: Sequence[str] = (), target_language: str = "de"
+) -> str:
     """The frozen prefix: identical for every call in a session, so the cache can hit.
 
-    A glossary is a list of ``source=target`` pairs, or of German terms to prefer. It is
-    baked in here rather than passed per call, because the whole point is that this
-    string never changes.
+    A glossary is a list of ``source=target`` pairs, or of target terms to prefer. It
+    is baked in here rather than passed per call, because the whole point is that this
+    string never changes. The target language is part of the prefix, so German and
+    Arabic get different, independently cached prompts.
     """
 
+    template = _TEMPLATES.get(target_language)
+    if template is None:
+        raise ValueError(
+            f"unsupported target language {target_language!r}; "
+            f"supported: {', '.join(sorted(SUPPORTED_TARGETS))}"
+        )
+
     if not glossary:
-        return SYSTEM_TEMPLATE.format(glossary="")
+        return template.format(glossary="")
 
     lines = "\n".join(f"- {entry}" for entry in glossary)
-    return SYSTEM_TEMPLATE.format(glossary=f"\n\nGlossary:\n{lines}")
+    return template.format(glossary=f"\n\nGlossary:\n{lines}")
+
+
 class OpenAiCompatMt:
     """A streaming ``MtProvider`` for any OpenAI-compatible endpoint."""
 
@@ -96,6 +135,7 @@ class OpenAiCompatMt:
         temperature: float = 0.0,
         timeout_s: float = 20.0,
         client: Any | None = None,
+        target_language: str = "de",
     ) -> None:
         # Belt and braces on the one setting that breaks realtime use. Startup validation
         # enforces it through the provider registry, but an adapter that silently allowed
@@ -107,14 +147,28 @@ class OpenAiCompatMt:
                 "reasoning adds seconds per segment (see docs/05-providers.md)"
             )
 
+        if target_language not in SUPPORTED_TARGETS:
+            raise ValueError(
+                f"unsupported target language {target_language!r}; "
+                f"supported: {', '.join(sorted(SUPPORTED_TARGETS))}"
+            )
+
         self.model = model
         self.base_url = base_url
         self.glossary = tuple(glossary)
         self.thinking = thinking
         self.temperature = temperature
         self.timeout_s = timeout_s
+        self.target_language = target_language
+        #: The name of the target language, used in the user message.
+        self.target_name = SUPPORTED_TARGETS[target_language]
 
-        self.system_prompt = build_system_prompt(self.glossary)
+        self.system_prompt = build_system_prompt(self.glossary, target_language)
+        #: A stable fingerprint of the frozen prefix, so two translators of different
+        #: targets are provably distinct and a caller can key a cache by it.
+        self.prompt_fingerprint = hashlib.sha256(
+            self.system_prompt.encode("utf-8")
+        ).hexdigest()[:16]
 
         #: A caller may inject a client (tests do); otherwise the SDK builds one. The key
         #: must be non-empty even where the endpoint ignores it, which is why a local
@@ -179,11 +233,11 @@ class OpenAiCompatMt:
         if ctx.target_context:
             previous = "\n".join(f"- {line}" for line in ctx.target_context)
             blocks.append(
-                "Your own previous German output, for terminology consistency only:\n"
-                f"{previous}"
+                f"Your own previous {self.target_name} output, for terminology "
+                f"consistency only:\n{previous}"
             )
 
-        blocks.append(f"Translate this into German:\n{src}")
+        blocks.append(f"Translate this into {self.target_name}:\n{src}")
 
         return [
             {"role": "system", "content": self.system_prompt},
@@ -204,7 +258,10 @@ class OpenAiCompatMt:
                 model=self.model,
                 messages=[
                     {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": "Translate this into German:\nHello."},
+                    {
+                        "role": "user",
+                        "content": f"Translate this into {self.target_name}:\nHello.",
+                    },
                 ],
                 stream=True,
                 temperature=self.temperature,

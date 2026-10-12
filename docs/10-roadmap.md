@@ -27,7 +27,6 @@
 
 ## Language support
 
-- Add English speech recognition with Arabic subtitle output.
 - Add German speech recognition with English subtitle output.
 - Add German speech recognition with Arabic subtitle output.
 

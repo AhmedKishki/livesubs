@@ -5,7 +5,8 @@
 ## Constraints
 
 - Keep live microphone capture server-side on Linux with PipeWire. Do not move capture into the browser.
-- Keep viewers German-only and strip English source text on the server. Any future bilingual mode needs a separate opt-in client role, not a relaxed viewer filter.
+- Keep the default viewer German-only. Arabic requires the explicit `viewer_ar` role. Filter other translations and English source text on the server for each viewer role.
+- Keep paid transcription paused without viewers and each translation paused without demand for its target language.
 - Keep provider transport, types, and exceptions behind the ASR and MT protocols.
 - Reject unavailable live adapters or credentials instead of substituting simulated output.
 - Preserve monotonic `seq` and `rev` values. Do not revise a final segment or send a draft after its final revision.
@@ -38,6 +39,10 @@ node --test web/tests/*.test.mjs
 ```bash
 uv run python tools/gen_pacing_vectors.py
 ```
+
+## Git workflow
+
+- Commit all intended changes and push after each substantial, verified change. Keep independent work in separate commits so it can be reverted.
 
 ## Documentation changes
 

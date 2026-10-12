@@ -235,7 +235,9 @@ async def test_a_viewer_opens_providers_and_warms_translation() -> None:
     viewer = hub.subscribe(ClientRole.VIEWER)
     try:
         await wait_until(lambda: factory.instances[0].opens == 1)
-        assert pipeline._mt_warmed is True
+        # The recogniser opens first, then German is warmed by its own cancellable
+        # step, so the warm is observed rather than assumed to precede the open.
+        await wait_until(lambda: pipeline._mt_warmed is True)
         # Speech-like audio keeps flowing, so a segment should be produced.
         await wait_until(lambda: any(s.state == "final" for s in hub.segments))
     finally:
@@ -525,8 +527,14 @@ def make_gated(source, *, asr, mt, asr_factory=None) -> LivePipeline:
     )
 
 
-async def test_disconnect_during_blocked_warm_never_opens_asr() -> None:
-    """A viewer who leaves mid-warm must not cause a billed ASR open at all."""
+async def test_disconnect_during_blocked_german_warm_cancels_the_warm() -> None:
+    """A German viewer who leaves mid-warm must cancel the billed warm promptly.
+
+    The shared recogniser is opened independently of the German warm, so with the
+    audience now empty it is torn down too; the guarantees under test are that no
+    German worker is started, no warm keeps running, and the warm latch is not set by
+    the aborted call.
+    """
 
     mt = BlockingWarmMt()
     asr = ControllableAsr()
@@ -538,11 +546,13 @@ async def test_disconnect_during_blocked_warm_never_opens_asr() -> None:
     viewer = hub.subscribe(ClientRole.VIEWER)
     try:
         await wait_until(lambda: mt.warm_started.is_set())
-        assert asr.open_calls == 0            # warm blocks before any open
 
         hub.unsubscribe(viewer)
         await wait_until(lambda: mt.warm_cancelled.is_set())
-        assert asr.open_calls == 0
+        await wait_until(lambda: asr.closed, timeout=5.0)
+        assert pipeline._de.active is False
+        assert pipeline._mt_warmed is False
+        assert pipeline._de.warmed is False
     finally:
         stop.set()
         await asyncio.wait_for(task, timeout=6.0)

@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Sequence
 
 from livesubs.events import HelloMessage, HelloPayload, PipelineStatus
 from livesubs.hub import Hub, SegmentPublisher
@@ -34,10 +35,17 @@ class Session:
         name: str,
         publisher: SegmentPublisher,
         language: str = "de",
+        languages: Sequence[str] | None = None,
     ) -> None:
         self.id = id
         self.name = name
         self.language = language
+        #: The target languages this session can actually produce. A viewer that asks
+        #: for a language not in this list is refused at the socket rather than being
+        #: allowed to create demand for text that will never arrive.
+        self.languages: tuple[str, ...] = (
+            tuple(languages) if languages is not None else (language,)
+        )
         self.hub = Hub()
         self.publisher = publisher
 

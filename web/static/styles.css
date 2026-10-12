@@ -251,6 +251,19 @@ body {
   color: #000;
 }
 
+/* The language picker is the one native control in the panel. It keeps the
+ * panel's dark surface and inherits the page direction, so the Arabic option
+ * reads right-to-left without extra rules. */
+.controls-panel .language-select {
+  width: 100%;
+  padding: 0.3em 0.4em;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font: inherit;
+}
+
 /* --- static pages (landing and operator console) --------------------------- */
 
 .page {

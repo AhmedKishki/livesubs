@@ -253,17 +253,20 @@ class SubtitleRecorder:
         source_code: str = "en",
         target_code: str = "de",
         formats: tuple[CueFormat, ...] = DEFAULT_FORMATS,
+        extra_target_codes: tuple[str, ...] = (),
     ) -> None:
         self.directory = Path(directory)
         self.stem = stem
         self.source_code = source_code
         self.target_code = target_code
+        self.extra_target_codes = tuple(extra_target_codes)
 
+        codes = (source_code, target_code, *self.extra_target_codes)
         self.writers: dict[tuple[str, CueFormat], SubtitleWriter] = {
             (code, fmt): SubtitleWriter(
                 self.directory / f"{stem}.{code}.{fmt}", fmt=fmt
             )
-            for code in (source_code, target_code)
+            for code in codes
             for fmt in formats
         }
 
@@ -284,16 +287,33 @@ class SubtitleRecorder:
         }
 
     def __call__(self, segment: CueSource) -> None:
-        """Record one committed segment. Matches ``LivePipeline.on_segment``."""
+        """Record one committed segment. Matches ``LivePipeline.on_segment``.
 
-        for code, text in (
-            (self.source_code, segment.src),
-            (self.target_code, segment.de),
-        ):
-            cue = Cue(start_ms=segment.start_ms, end_ms=segment.end_ms, text=text)
-            for (writer_code, _fmt), writer in self.writers.items():
-                if writer_code == code:
-                    writer.add(cue)
+        The segment's ``language`` decides which target file receives its text. The
+        English source is written once, by the German stream, so an Arabic sidecar
+        never duplicates the English cues. An Arabic-only session therefore writes no
+        English sidecar, which is the documented limitation of keeping one source file.
+        """
+
+        language = getattr(segment, "language", "de")
+
+        if language == "ar":
+            arabic = getattr(segment, "ar", None) or ""
+            self._add("ar", segment, arabic)
+            return
+
+        # German (and any unknown language) writes the source once plus the configured
+        # target, which is the pre-Arabic behaviour unchanged.
+        self._add(self.source_code, segment, segment.src)
+        self._add(self.target_code, segment, segment.de)
+
+    def _add(self, code: str, segment: CueSource, text: str) -> None:
+        if not text:
+            return
+        cue = Cue(start_ms=segment.start_ms, end_ms=segment.end_ms, text=text)
+        for (writer_code, _fmt), writer in self.writers.items():
+            if writer_code == code:
+                writer.add(cue)
 
     def close(self) -> None:
         for writer in self.writers.values():

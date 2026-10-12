@@ -64,12 +64,18 @@ def create_app(
     """Build the application around one session and one publisher."""
 
     resolved_id = session_id or settings.session_id
+    # A publisher that can produce more than one target language declares it; the
+    # session then permits those roles and the API reports them. A publisher with no
+    # declaration stays German-only, which is the safe default.
+    languages = getattr(publisher, "supported_languages", None)
     registry = SessionRegistry()
     registry.add(
         Session(
             id=resolved_id,
             name=session_name or settings.session_name,
             publisher=publisher,
+            language=settings.language,
+            languages=languages,
         )
     )
 

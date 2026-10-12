@@ -2,7 +2,7 @@
 
 ## What this is
 
-- A server captures one presenter's English speech and publishes German subtitles to attendees on their own phones.
+- A server captures one presenter's English speech and publishes German or requested Arabic subtitles to attendees' phones.
 - Attendees open the viewer page by scanning a QR code on the shared network.
 - Capture runs on the server. The viewer page asks for no microphone permission, so it works over plain HTTP.
 
@@ -22,7 +22,7 @@
 
 ## Language direction
 
-- Input is English audio. The viewer page renders German only.
+- Input is English audio. The default viewer renders German. An explicit Arabic viewer receives Arabic instead, with server-side language filtering.
 - The English source stays in the pipeline and reaches the operator console, so a mistranslation can be diagnosed.
 
 ## Non-goals

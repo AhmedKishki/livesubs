@@ -10,6 +10,7 @@
 // animation is needed. The protocol removes a whole class of visual problem.
 
 import { Action, decideSegment, holdMs, shouldRetire } from "./pacing.js";
+import { languageConfig, segmentText } from "./language.js";
 
 //: Matches --fade-out-ms in styles.css. Duplicated because the JS needs it to
 //: know when the outgoing layer may be cleared.
@@ -36,11 +37,6 @@ const DEFAULT_PREFS = {
   backdrop: "box",
 };
 
-const STATUS_TEXT = {
-  delayed: "Untertitel verzögert",
-  stopped: "Untertitel nicht verfügbar",
-};
-
 // One knob per step, so the panel stays a couple of buttons wide.
 const FONT_STEPS = [0.75, 0.9, 1, 1.2, 1.45];
 const POSITIONS = ["bottom", "top"];
@@ -64,10 +60,14 @@ export function savePrefs(prefs) {
 }
 
 export class SubtitleOverlay {
-  constructor(root, { onAck, prefs = loadPrefs() } = {}) {
+  constructor(root, { onAck, prefs = loadPrefs(), language = "de" } = {}) {
     this.root = root;
     this.onAck = onAck ?? (() => {});
     this.prefs = prefs;
+    //: The one language this overlay renders. The default keeps every existing
+    //: caller German, and the page's URL decides the rest.
+    this.language = language;
+    this.config = languageConfig(language);
 
     this.current = null;
     this.dropped = 0;
@@ -95,8 +95,10 @@ export class SubtitleOverlay {
     const text = document.createElement("span");
     text.className = "subtitle-text";
     // `lang="de"` is what enables German hyphenation. Without it, `hyphens:
-    // auto` silently does nothing and long compounds overflow the line.
-    text.setAttribute("lang", "de");
+    // auto` silently does nothing and long compounds overflow the line. The
+    // Arabic view carries `lang="ar"` and `dir="rtl"` instead.
+    text.setAttribute("lang", this.config.htmlLang);
+    text.setAttribute("dir", this.config.dir);
 
     box.append(text);
     layer.append(box);
@@ -133,7 +135,13 @@ export class SubtitleOverlay {
 
   /** Apply one segment from the wire, if the pacing policy says we may. */
   offer(segment, receivedAt = performance.now()) {
-    const text = segment.de ?? "";
+    // The selected language's field, or nothing. A segment of the other language
+    // is ignored before pacing, so it can neither advance our `seq`/`rev` state
+    // nor count as a drop; the server already filters, and this is the second
+    // line of defence for a mixed feed.
+    const text = segmentText(segment, this.language);
+    if (text === null) return Action.IGNORE;
+
     const incoming = { seq: segment.seq, rev: segment.rev, chars: text.length };
     const action = decideSegment(this.current, incoming, receivedAt);
 
@@ -296,7 +304,10 @@ export class SubtitleOverlay {
     this.root.classList.toggle("is-stalled", status === "stopped");
 
     if (!pill) return;
-    pill.textContent = stalled ? (detail || STATUS_TEXT[status] || status) : "";
+    // The viewer shows its own language's label and never the server's raw
+    // detail, which is currently English. The operator console reads `detail`
+    // directly instead, so an untranslated diagnostic stays visible there.
+    pill.textContent = stalled ? (this.config.status[status] ?? status) : "";
     pill.classList.toggle("is-visible", stalled);
     pill.classList.toggle("is-stopped", status === "stopped");
   }
@@ -319,4 +330,4 @@ export class SubtitleOverlay {
   }
 }
 
-export { FONT_STEPS, POSITIONS, BACKDROPS, STATUS_TEXT };
+export { FONT_STEPS, POSITIONS, BACKDROPS };

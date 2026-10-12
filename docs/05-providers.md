@@ -32,8 +32,9 @@
 - Speechmatics: realtime translation with `enable_partials`, a custom dictionary of up to 20,000 items, an on-premise GPU container, 48-hour sessions, and an Audio filtering feature that removes background speech. It is not registered.
 - AssemblyAI: not evaluated in depth.
 
-## Machine translation (English to German)
+## Machine translation (English to German or Arabic)
 
+- The recorded cost and quality comparisons below use English-to-German workloads. Arabic costs and quality have not been measured against the corpus.
 ### DeepSeek `deepseek-flash`, the default
 
 - Protocol: OpenAI-compatible at `base_url = https://api.deepseek.com`, so the `openai` SDK client serves it.
@@ -57,6 +58,7 @@
 - It can bake a glossary into the frozen system prompt. No glossary is configured, so the list is empty.
 - It does not use JSON output or Chat Prefix Completion.
 - It calls `warm()` before the first segment. Cache construction can take seconds, but warming does not guarantee a cache hit or response time.
+- German and Arabic use separate frozen target prompts with the same configured provider and key. Arabic is constructed and warmed only when explicitly requested, and either language stops making requests when its audience is empty.
 - Recorded API observations put DeepSeek time to first token at 489–909 ms per segment. The run date and corpus were not recorded with those observations, so the range is not a performance guarantee.
 - Vendor features not used by the adapter include Chat Prefix Completion (beta), which pre-fills an assistant reply, and JSON Output, which constrains a response to an object such as `{"de": "..."}`.
 

@@ -95,9 +95,11 @@ MIN_VISIBLE_MS = 800                                   // when it may be REPLACE
 | font size | 5 steps | yes |
 | position | bottom / top | yes |
 | backdrop | box / shadow / outline | yes |
+| language | German or explicit Arabic | URL, not local storage |
 | fullscreen | button | no |
 
 - Defaults are German-only with the box backdrop.
+- Arabic uses `?lang=ar`, `lang="ar"` and right-to-left text direction. The overlay ignores the other language before applying pacing.
 
 ## Status handling
 
@@ -105,14 +107,13 @@ MIN_VISIBLE_MS = 800                                   // when it may be REPLACE
 - **live:** the status pill is hidden.
 - **delayed:** the status pill is visible, without dimming the subtitle.
 - **stopped:** the status pill is visible and the last line is dimmed.
-- The pill uses the server's `detail` when supplied. Without detail, it falls back to "Untertitel verzögert" or "Untertitel nicht verfügbar".
-- Current server details include English text such as "translation is behind". German fallback labels do not localise those details.
+- Viewers use status labels in their selected language, not untranslated server details. The operator can inspect those details separately.
 
 ## Accessibility
 
 - Target WCAG 2.2 AA contrast against each backdrop. Verify contrast instead of treating the target as a measured result.
 - Respect `prefers-reduced-motion` by skipping the cross-fade and using instant swaps.
-- Set `lang="de"` on the page so screen readers and hyphenation both behave.
+- Set the page and text span language to `de` or `ar` for the selected viewer language.
 - Convey no text by colour or position alone.
 - Use JavaScript-driven layout only. Do not put meaningful text in CSS `content`.
 
@@ -121,6 +122,7 @@ MIN_VISIBLE_MS = 800                                   // when it may be REPLACE
 - Check clipping and off-screen layout in a browser render.
 - The check needs Node and a Chrome or Chromium binary, so it is optional tooling.
 - `uv run python tools/check_overlay_layout.py` measures a small phone, a typical phone and a laptop.
+- `uv run python tools/check_overlay_layout.py --language ar` checks Arabic layout and right-to-left clipping at the same sizes.
 - `uv run python tools/check_overlay_layout.py --backdrop shadow --shot /tmp/overlay.png` also writes a screenshot. The box backdrop uses `backdrop-filter`, which headless Chrome does not paint, so a screenshot needs `--backdrop shadow`.
 - The tool fails when a line is clipped, laid out past the bottom edge, or emptied after it appears.
 

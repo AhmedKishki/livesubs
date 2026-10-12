@@ -132,8 +132,12 @@ def build_router(settings: Settings) -> APIRouter:
                 "id": session.id,
                 "name": session.name,
                 "language": session.language,
+                #: The target languages this session can actually produce. The viewer
+                #: page uses it to decide whether to offer the Arabic opt-in.
+                "languages": list(getattr(session, "languages", (session.language,))),
                 "version": EVENT_VERSION,
                 "viewers": session.hub.viewer_count,
+                "viewers_by_language": session.hub.viewers_by_language,
                 "connections": session.hub.subscriber_count,
                 "running": session.running,
                 "uptime_s": round(session.uptime_s, 1),
@@ -193,6 +197,9 @@ def build_router(settings: Settings) -> APIRouter:
                 "ok": bool(session and session.running),
                 "session": settings.session_id,
                 "viewers": session.hub.viewer_count if session else 0,
+                "viewers_by_language": (
+                    session.hub.viewers_by_language if session else {"de": 0, "ar": 0}
+                ),
                 "connections": session.hub.subscriber_count if session else 0,
             }
         )

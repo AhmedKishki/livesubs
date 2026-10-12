@@ -16,6 +16,7 @@ Needs `node` and a Chrome or Chromium binary, so it is optional tooling rather t
 of the test suite:
 
     uv run python tools/check_overlay_layout.py
+    uv run python tools/check_overlay_layout.py --language ar
     uv run python tools/check_overlay_layout.py --shot /tmp/phone.png
 """
 
@@ -23,7 +24,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -61,11 +64,25 @@ CHROME_CANDIDATES = (
     "chromium-browser",
 )
 
+#: Arabic lines for `--language ar`. Fixed examples rather than anything
+#: translated through an API: the layout check must be deterministic and must not
+#: need credentials. They mirror the German lines in length and content so the two
+#: languages are measured under comparable pressure, and carry long unbreakable
+#: words to exercise RTL wrapping.
+ARABIC_LINES: tuple[str, ...] = (
+    "اليوم سننظر في التذبذبات المخمّدة.",
+    "يتناقص السعة أُسّيًا مع مرور الوقت.",
+    "يحدّد ثابت التخميد مدى سرعة فقدان الطاقة.",
+    "اكتب هذا، لأنه سيظهر في الاختبار.",
+    "لنعتبر كتلة على نابض في وسط لزج.",
+    "ينزاح تردد الرنين قليلًا.",
+)
+
 #: The page under test. It declares the same viewport meta as the viewer page, because
 #: without it mobile emulation falls back to a 980px layout viewport and the measurement
 #: describes a tablet instead of the phone the report came from.
 HARNESS_HTML = """<!doctype html>
-<html lang="de">
+<html lang="__HTML_LANG__" dir="__DIR__">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
@@ -79,15 +96,18 @@ HARNESS_HTML = """<!doctype html>
       import { SubtitleOverlay } from "./static/overlay.js";
 
       const LINES = __LINES__;
+      const LANGUAGE = "__LANGUAGE__";
+      const FIELD = LANGUAGE === "ar" ? "ar" : "de";
 
       const overlay = new SubtitleOverlay(document.getElementById("root"), {
+        language: LANGUAGE,
         prefs: { fontScale: 1, position: "__POSITION__", backdrop: "__BACKDROP__" },
       });
 
       const rows = LINES.map((text, index) => {
         // Far enough apart that the pacing policy accepts every line as new.
         overlay.offer(
-          { seq: index, rev: 0, state: "final", de: text, src: null },
+          { seq: index, rev: 0, state: "final", language: LANGUAGE, [FIELD]: text, src: null },
           performance.now() + index * 60_000,
         );
 
@@ -107,9 +127,11 @@ HARNESS_HTML = """<!doctype html>
           boxTopPx: Math.round(boxRect.top),
           boxBottomPx: Math.round(boxRect.bottom),
           // Signed, so overflow shows as a positive number rather than being hidden by a
-          // clamp on the way out.
+          // clamp on the way out. Both horizontal sides are checked, because an RTL line
+          // can overflow the left edge where the LTR-only check would see nothing wrong.
           bottomSlackPx: Math.round(boxRect.bottom - textRect.bottom),
           rightSlackPx: Math.round(boxRect.right - textRect.right),
+          leftSlackPx: Math.round(textRect.left - boxRect.left),
           // Against the screen, which is what the reader experiences. Negative means the
           // text is off the bottom of the display, the failure a box-relative number
           // cannot see at all.
@@ -241,12 +263,16 @@ def _wait_for(url: str, timeout: float) -> bool:
     return False
 
 
-def _lines_under_test() -> list[str]:
+def _lines_under_test(language: str = "de") -> list[str]:
     """The lines the simulated lecture actually sends, so the check tracks the content.
 
     Reads `livesubs.sim` rather than copying the strings, because a stale copy is how a
-    layout check quietly stops testing anything.
+    layout check quietly stops testing anything. Arabic has no simulated lecture, so it
+    uses the fixed :data:`ARABIC_LINES` instead of anything produced through an API.
     """
+
+    if language == "ar":
+        return list(ARABIC_LINES)
 
     from livesubs.sim import SCRIPTS
 
@@ -254,10 +280,14 @@ def _lines_under_test() -> list[str]:
     return [segment.de_final for segment in script.segments]
 
 
-def _write_harness(directory: Path, *, position: str, backdrop: str) -> Path:
+def _write_harness(directory: Path, *, position: str, backdrop: str, language: str) -> Path:
     body_class = "is-top-host" if position == "top" else ""
+    html_lang, direction = ("ar", "rtl") if language == "ar" else ("de", "ltr")
     html = (
-        HARNESS_HTML.replace("__LINES__", json.dumps(_lines_under_test(), ensure_ascii=False))
+        HARNESS_HTML.replace("__LINES__", json.dumps(_lines_under_test(language), ensure_ascii=False))
+        .replace("__LANGUAGE__", language)
+        .replace("__HTML_LANG__", html_lang)
+        .replace("__DIR__", direction)
         .replace("__POSITION__", position)
         .replace("__BACKDROP__", backdrop)
         .replace("__BODY_CLASS__", body_class)
@@ -343,6 +373,8 @@ def _problems(measured: dict, *, height: int, position: str) -> list[str]:
             problems.append(f"{where}: {-row['bottomSlackPx']}px of text below its own box")
         if row["rightSlackPx"] < -TOLERANCE_PX:
             problems.append(f"{where}: {-row['rightSlackPx']}px of text past the right edge")
+        if row["leftSlackPx"] < -TOLERANCE_PX:
+            problems.append(f"{where}: {-row['leftSlackPx']}px of text past the left edge")
         if row["viewportSlackPx"] < -TOLERANCE_PX:
             problems.append(f"{where}: {-row['viewportSlackPx']}px of text off the screen")
         if abs(row[edge_key] - anchor) > TOLERANCE_PX:
@@ -381,6 +413,15 @@ def main(argv: list[str] | None = None) -> int:
             "screenshot needs --backdrop shadow; the measurements are unaffected"
         ),
     )
+    parser.add_argument(
+        "--language",
+        choices=("de", "ar"),
+        default="de",
+        help=(
+            "which viewer language to measure (default: de). Arabic renders the `ar` "
+            "field right-to-left; its lines are the fixed ARABIC_LINES fixtures"
+        ),
+    )
     args = parser.parse_args(argv)
 
     node = shutil.which("node")
@@ -412,7 +453,9 @@ def main(argv: list[str] | None = None) -> int:
     with tempfile.TemporaryDirectory(prefix="livesubs-overlay-") as raw:
         work = Path(raw)
         (work / "static").symlink_to(static)
-        script = _write_harness(work, position=position, backdrop=args.backdrop)
+        script = _write_harness(
+            work, position=position, backdrop=args.backdrop, language=args.language
+        )
 
         http_port, chrome_port = _free_port(), _free_port()
         server = subprocess.Popen(
@@ -441,6 +484,7 @@ def main(argv: list[str] | None = None) -> int:
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            start_new_session=True,
         )
 
         try:
@@ -449,7 +493,7 @@ def main(argv: list[str] | None = None) -> int:
                 print("Chrome never opened its debugging port", file=sys.stderr)
                 return 2
 
-            print(f"overlay layout, {position} placement", flush=True)
+            print(f"overlay layout, {args.language} language, {position} placement", flush=True)
             print("  viewport       size        font          lines   verdict")
             for name, width, height in VIEWPORTS:
                 shot = Path(args.shot) if args.shot and name == "phone" else None
@@ -479,10 +523,21 @@ def main(argv: list[str] | None = None) -> int:
                 for problem in problems:
                     print(f"      - {problem}")
         finally:
-            browser.terminate()
-            server.terminate()
-            browser.wait(timeout=10)
-            server.wait(timeout=10)
+            try:
+                os.killpg(browser.pid, signal.SIGTERM)
+                browser.wait(timeout=10)
+            except ProcessLookupError:
+                pass
+            except subprocess.TimeoutExpired:
+                pass
+            finally:
+                try:
+                    os.killpg(browser.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                browser.wait(timeout=10)
+                server.terminate()
+                server.wait(timeout=10)
 
     if failures:
         print(f"\n{failures} layout problem(s).", file=sys.stderr)
