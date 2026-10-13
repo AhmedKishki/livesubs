@@ -333,41 +333,214 @@ body {
   margin: 0.25rem 0;
 }
 
-.admin-stats {
+.admin-head {
   display: flex;
   flex-wrap: wrap;
-  gap: 1.5rem;
-  margin: 0 0 1.5rem;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem 1.5rem;
+  margin: 0 0 1rem;
 }
 
-.admin-stats div {
-  display: flex;
-  flex-direction: column;
+.admin-head h1 {
+  margin: 0;
 }
 
-.admin-stats dt {
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-  opacity: 0.55;
+.admin-mode {
+  margin: 0;
+  opacity: 0.65;
+  font-size: 0.95rem;
 }
 
-.admin-stats dd {
-  margin: 0.15rem 0 0;
+.admin-overall {
+  margin: 0;
+  padding: 0.3rem 0.8rem;
+  border-radius: 999px;
+  border: 1px solid currentColor;
   font-variant-numeric: tabular-nums;
-  font-size: 1.1rem;
 }
 
-#stat-status[data-status="live"] {
+.admin-overall[data-status="live"] {
   color: #6ee7a8;
 }
 
-#stat-status[data-status="delayed"] {
+.admin-overall[data-status="delayed"] {
   color: #fbbf24;
 }
 
-#stat-status[data-status="stopped"] {
+.admin-overall[data-status="stopped"] {
   color: #f87171;
+}
+
+.admin-alerts:empty {
+  display: none;
+}
+
+.admin-alerts {
+  margin: 0 0 1rem;
+}
+
+.admin-alert {
+  margin: 0 0 0.35rem;
+  padding: 0.45rem 0.8rem;
+  border-radius: 8px;
+  border-inline-start: 4px solid currentColor;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.admin-alert[data-severity="critical"] {
+  color: #f87171;
+}
+
+.admin-alert[data-severity="warning"] {
+  color: #fbbf24;
+}
+
+.admin-alert[data-severity="info"] {
+  color: #7fd1ff;
+}
+
+/* The figures: a card each for the audience, the signal, recognition and the host. */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+  gap: 1rem;
+  margin: 0 0 1.5rem;
+}
+
+.card {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 0.8rem 1rem;
+  min-width: 0;
+}
+
+.card-wide {
+  grid-column: 1 / -1;
+  overflow-x: auto;
+}
+
+.kv {
+  margin: 0;
+}
+
+.kv > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.18rem 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.kv > div:first-child {
+  border-top: 0;
+}
+
+.kv dt {
+  opacity: 0.6;
+  font-size: 0.9rem;
+}
+
+.kv dd {
+  margin: 0;
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-tone="warn"] {
+  color: #fbbf24;
+}
+
+[data-tone="bad"] {
+  color: #f87171;
+}
+
+[data-tone="muted"] {
+  opacity: 0.55;
+}
+
+/* The input level: a bar for the current level, a tick for the recent peak and one for the
+ * noise floor the voice detector has settled on. */
+.meter {
+  position: relative;
+  height: 0.7rem;
+  margin: 0.2rem 0 0.7rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.meter-level {
+  height: 100%;
+  width: 0;
+  background: #6ee7a8;
+  transition: width 0.4s linear;
+}
+
+.meter-level[data-state="quiet"] {
+  background: #7a8794;
+}
+
+.meter-level[data-state="clip"] {
+  background: #f87171;
+}
+
+.meter-peak,
+.meter-floor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+}
+
+.meter-peak {
+  background: #fff;
+}
+
+.meter-floor {
+  background: #fbbf24;
+}
+
+.grid {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.grid th,
+.grid td {
+  padding: 0.3rem 0.6rem;
+  text-align: start;
+  white-space: nowrap;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.grid th {
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.6;
+  border-top: 0;
+}
+
+.admin-errors {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.admin-errors li {
+  margin: 0.15rem 0;
+}
+
+.admin-error {
+  color: #f87171;
+}
+
+.admin-log {
+  margin: 0 0 1.5rem;
 }
 
 .admin-live {
