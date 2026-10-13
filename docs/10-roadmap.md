@@ -32,13 +32,12 @@
 
 ## Deployment
 
-- Update the starter template's ignored `archive_dir` key and runtime-failover comment to match settings and provider selection.
 - Rehearse a full session in the deployment hall with its network and a bilingual reviewer.
 - Exclude the unmatched podcast intro from both the scored audio span and its reference so WER does not count unreferenced speech as recognition errors.
 
 ## Registered but not implemented
 
-- Implement OpenAI ASR before selecting it for a live stage. It is registered as active, but `build_asr` currently raises for any name other than `deepgram`.
+- Implement OpenAI ASR and then mark it active. It is registered as planned, so it holds a key and satisfies no requirement.
 
 ## Deferred, with reasons
 

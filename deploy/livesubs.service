@@ -16,9 +16,13 @@ WorkingDirectory=%h
 # and the service has no authentication by design (see docs/07-delivery-qr.md).
 # It must never be exposed to the internet.
 #
-ExecStart=%h/.local/bin/livesubs --start
+ExecStart=%h/.local/bin/livesubs --start --exit-on-failure
 Restart=always
 RestartSec=3
+
+# The process exits non-zero when the pipeline dies (--exit-on-failure), which is what
+# lets Restart= bring a dead pipeline back; the server staying up would not.
+NoNewPrivileges=yes
 
 StandardOutput=journal
 StandardError=journal

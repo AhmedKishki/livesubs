@@ -336,14 +336,18 @@ def test_invalid_new_key_is_not_written(monkeypatch, tmp_path):
 
 
 def test_unsupported_active_asr_adapter_is_rejected_before_prompt(monkeypatch):
-    # Only Deepgram has an ASR adapter; an active OpenAI ASR provider must be refused
-    # before any key prompt or network call. The fixture forbids _read_secret.
-    monkeypatch.setenv("OPENAI_API_KEY", "fake-openai")
+    # Only Deepgram has an ASR adapter; an active provider without one must be refused
+    # before any key prompt or network call. The fixture forbids _read_secret. The
+    # provider is declared in the settings: none that ships is active without an adapter.
+    monkeypatch.setenv("ACME_API_KEY", "fake-acme")
     use_sources(monkeypatch, [("mic0", "Mic 0")])
     use_picker(monkeypatch, "mic0")
+    settings = make_settings(
+        providers={"acme": {"role": "asr"}}, pipeline={"asr": ["acme"]}
+    )
 
-    with pytest.raises(ValueError, match="openai"):
-        launcher.prepare_live_start(make_settings(), interactive=True)
+    with pytest.raises(ValueError, match="acme"):
+        launcher.prepare_live_start(settings, interactive=True)
 
 
 def test_keyless_local_mt_skips_probe(monkeypatch):

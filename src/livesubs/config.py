@@ -55,25 +55,31 @@ __all__ = [
     "ServerSettings",
     "SessionSettings",
     "Settings",
+    "checkout_root",
     "env_files",
     "find_config_file",
     "get_settings",
     "load_settings",
-    "repo_root",
 ]
 
 #: Name of the committed config file, looked for in the paths below.
 CONFIG_FILENAME = "livesubs.yaml"
 
 
-def repo_root(start: Path | None = None) -> Path:
-    """Locate the project root by walking up to ``pyproject.toml``."""
+def checkout_root(start: Path | None = None) -> Path | None:
+    """The source checkout this code is running from, or ``None`` when it is installed.
+
+    Found by walking up from this file to ``pyproject.toml``. There is deliberately no
+    fallback to the working directory: for an installed wheel the walk finds nothing, and
+    answering "wherever the operator happened to run it" made the server serve a ``web``
+    folder that belonged to some other project.
+    """
 
     here = (start or Path(__file__)).resolve()
     for candidate in (here, *here.parents):
         if (candidate / "pyproject.toml").is_file():
             return candidate
-    return Path.cwd()
+    return None
 
 
 def find_config_file(explicit: Path | None = None, start: Path | None = None) -> Path | None:
@@ -93,9 +99,10 @@ def find_config_file(explicit: Path | None = None, start: Path | None = None) ->
     if from_env:
         return Path(from_env).expanduser()
 
+    root = checkout_root(start)
     candidates = (
         Path.cwd() / CONFIG_FILENAME,
-        repo_root(start) / CONFIG_FILENAME,
+        *((root / CONFIG_FILENAME,) if root is not None else ()),
         global_env_path().parent / CONFIG_FILENAME,
     )
     for candidate in candidates:
@@ -197,10 +204,11 @@ class SegmentationSettings(_Group):
 
 
 class PipelineSettings(_Group):
-    """Which provider serves each stage, in fallback order.
+    """Which provider serves each stage, in preference order.
 
-    The first entry with a usable key is used and the rest are failover. An empty
-    list means "any active provider for that role, in registry order".
+    The first entry with a usable key is chosen once, at startup. Nothing fails over
+    while a session runs. An empty list means "any active provider for that role, in
+    registry order".
     """
 
     asr: list[str] = Field(default_factory=list)

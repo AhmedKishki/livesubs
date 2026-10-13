@@ -9,8 +9,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 
 # No torch, no CUDA. The deployment box has no NVIDIA GPU, so all model
-# inference happens at the API edge. onnxruntime is CPU-only and is used
-# solely for an optional Silero VAD.
+# inference happens at the API edge.
 dependencies = [
   "anyio>=4.4",
   "fastapi>=0.115",
@@ -29,8 +28,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Optional: only needed for energy-based VAD fallback experiments.
-vad = ["onnxruntime>=1.20"]
 dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.7"]
 
 [project.scripts]

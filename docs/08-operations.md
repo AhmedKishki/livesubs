@@ -3,7 +3,8 @@
 ## Deployment shape
 
 - The service runs as one process on one port.
-- A systemd user service with `Restart=always` can restart a crashed process.
+- A systemd user service with `Restart=always` can restart a crashed process. The shipped unit passes `--exit-on-failure`, so the process also exits non-zero when the pipeline dies, and systemd then restarts it. Without that flag the server keeps answering and shows `stopped`.
+- `/healthz` answers 503 while the pipeline is not running, so any probe can tell a dead pipeline from a live server.
 - Start the installed command interactively to choose a microphone and complete setup.
 
 ```bash
@@ -91,7 +92,7 @@ sudo ufw allow 8000/tcp comment 'livesubs'
 - An exception escaping the publisher sets the session to `stopped` with the generic detail `publisher failed`.
 - A normal end of the audio source, including a capture failure that returns normally, can leave the status `live` with no new output.
 - Runtime provider failover is not implemented. Provider failures can leave gaps while the server continues running.
-- A stall watchdog is not implemented, so a silent capture or a dead ASR socket does not by itself raise `stopped`.
+- A stall watchdog is not implemented, so a silent capture does not by itself raise `stopped`.
 - Watch the terminal and `/admin` for unexpected gaps while the presenter is speaking.
 
 | Condition | Current report |
@@ -125,7 +126,7 @@ sudo ufw allow 8000/tcp comment 'livesubs'
 | Symptom | Likely cause | Action |
 | --- | --- | --- |
 | No subtitles at all | capture target wrong or muted | check pre-flight 1 and 2. A muted default microphone is the usual cause |
-| Subtitles frozen but the status is live | ASR socket died, and no watchdog or failover is active | restart the session |
+| Subtitles frozen but the status is live | capture is delivering silence, or recognition stopped without its socket closing | check the microphone and the terminal; restart the session |
 | No German for a segment | the translation returned nothing | the pipeline drops the segment and publishes an error. Check the MT key and the provider log |
 | Growing lag over minutes | translation backlog | inspect terminal timings, provider response times and host CPU load |
 | No viewer can connect | host firewall, wrong URL or WiFi isolation | test the printed LAN address, check the firewall, then try a network without isolation |

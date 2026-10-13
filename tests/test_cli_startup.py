@@ -155,3 +155,82 @@ def test_start_and_serve_cannot_be_combined():
     with pytest.raises(SystemExit) as exc:
         cli.main(["--start", "--serve"])
     assert exc.value.code == 2
+
+
+# --- a dead pipeline must be able to take the process down with it ------------------------
+
+
+def serve_with_a_fake_server(monkeypatch, tmp_path, *, die: bool, flag: bool):
+    """Run the real `_cmd_serve` with only uvicorn's event loop replaced."""
+
+    import uvicorn
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    # Not the developer's own livesubs.yaml, which would change the session id and more.
+    settings = Settings(_env_file=None, capture={"archive": False, "subtitles": False})
+    monkeypatch.setattr(cli, "get_settings", lambda path: settings)
+    seen: dict = {}
+
+    class FakeServer:
+        should_exit = False
+
+        def __init__(self, config) -> None:
+            seen["app"] = config.app
+
+        def run(self) -> None:
+            if die:
+                # What Session does when the publisher raises.
+                seen["app"].state.sessions.require(settings.session_id).on_failure()
+
+    monkeypatch.setattr(uvicorn, "Server", FakeServer)
+    monkeypatch.setattr(uvicorn, "Config", lambda app, **kw: type("C", (), {"app": app})())
+    args = ["--serve", "--approach", "sim", "--once"]
+    code = cli.main([*args, "--exit-on-failure"] if flag else args)
+    return code, seen, settings
+
+
+def test_a_pipeline_that_dies_makes_the_process_exit_non_zero(monkeypatch, tmp_path):
+    code, _, _ = serve_with_a_fake_server(monkeypatch, tmp_path, die=True, flag=True)
+
+    assert code == 1
+
+
+def test_without_the_flag_a_dead_pipeline_does_not_change_the_exit_status(monkeypatch, tmp_path):
+    """Interactive use keeps the server up so the page can say 'stopped'."""
+
+    from livesubs.server.sessions import Session
+
+    code, seen, settings = serve_with_a_fake_server(monkeypatch, tmp_path, die=False, flag=False)
+
+    assert code == 0
+    session: Session = seen["app"].state.sessions.require(settings.session_id)
+    assert session.on_failure is None
+
+
+def test_a_clean_run_exits_zero_even_with_the_flag(monkeypatch, tmp_path):
+    code, _, _ = serve_with_a_fake_server(monkeypatch, tmp_path, die=False, flag=True)
+
+    assert code == 0
+
+
+def test_the_service_unit_asks_to_exit_on_failure() -> None:
+    from pathlib import Path
+
+    unit = (Path(__file__).resolve().parent.parent / "deploy" / "livesubs.service").read_text()
+
+    assert "--exit-on-failure" in unit
+    assert "Restart=always" in unit
+
+
+def test_a_loose_credential_file_is_called_out_before_serving(monkeypatch, tmp_path, capsys):
+    secrets = tmp_path / ".env"
+    secrets.write_text("DEEPGRAM_API_KEY=sk-distinctive-secret-value\n")
+    secrets.chmod(0o664)
+    monkeypatch.setattr(cli, "insecure_files", lambda: [secrets])
+
+    cli._warn_insecure_files()
+
+    err = capsys.readouterr().err
+    assert f"chmod 600 {secrets}" in err
+    assert "sk-distinctive-secret-value" not in err

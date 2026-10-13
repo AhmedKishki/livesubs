@@ -16,7 +16,7 @@ import qrcode
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 
-from livesubs.config import Settings, repo_root
+from livesubs.config import Settings, checkout_root
 from livesubs.events import EVENT_VERSION
 from livesubs.preflight import lan_ip
 
@@ -28,9 +28,10 @@ def web_dir(settings: Settings) -> Path:
 
     if settings.web_dir is not None:
         return settings.web_dir
-    checkout = repo_root() / "web"
-    if checkout.is_dir():
-        return checkout
+    root = checkout_root()
+    if root is not None and (root / "web").is_dir():
+        return root / "web"
+    # An installed wheel carries the frontend beside the package.
     return Path(__file__).resolve().parent.parent / "web"
 
 
@@ -190,18 +191,25 @@ def build_router(settings: Settings) -> APIRouter:
 
     @router.get("/healthz")
     async def healthz(request: Request) -> JSONResponse:
-        """Cheap liveness probe, for systemd and the watchdog."""
+        """Liveness probe for a supervisor.
+
+        503 when the pipeline is not running. The server being up says nothing about
+        whether anyone is getting subtitles, and a probe that answers 200 either way
+        cannot be used to restart a dead one.
+        """
         session = request.app.state.sessions.get(settings.session_id)
+        running = bool(session and session.running)
         return JSONResponse(
             {
-                "ok": bool(session and session.running),
+                "ok": running,
                 "session": settings.session_id,
                 "viewers": session.hub.viewer_count if session else 0,
                 "viewers_by_language": (
                     session.hub.viewers_by_language if session else {"de": 0, "ar": 0}
                 ),
                 "connections": session.hub.subscriber_count if session else 0,
-            }
+            },
+            status_code=200 if running else 503,
         )
 
     return router

@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from livesubs.events import HelloMessage, HelloPayload, PipelineStatus
 from livesubs.hub import Hub, SegmentPublisher
@@ -36,6 +36,7 @@ class Session:
         publisher: SegmentPublisher,
         language: str = "de",
         languages: Sequence[str] | None = None,
+        on_failure: Callable[[], None] | None = None,
     ) -> None:
         self.id = id
         self.name = name
@@ -48,6 +49,12 @@ class Session:
         )
         self.hub = Hub()
         self.publisher = publisher
+        #: Called when the publisher dies with an exception. A service uses it to exit, so
+        #: its supervisor restarts the process: a server that is up but whose pipeline is
+        #: dead looks healthy to everything except the people reading the subtitles.
+        self.on_failure = on_failure
+        #: Set when the publisher died unexpectedly rather than being asked to stop.
+        self.failed = False
 
         self.stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -92,7 +99,10 @@ class Session:
             raise
         except Exception:
             logger.exception("publisher for session %s failed", self.id)
+            self.failed = True
             self.hub.publish_status(PipelineStatus.STOPPED, detail="publisher failed")
+            if self.on_failure is not None:
+                self.on_failure()
 
     async def stop_publishing(self) -> None:
         """Ask the publisher to finish, then wait for it, then cancel if needed."""

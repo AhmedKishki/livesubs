@@ -4,7 +4,7 @@
 
 - Create `livesubs.yaml` with `--init-config`, then edit only the settings that differ from defaults.
 - Local settings and credential files are gitignored. The tracked starter template is `livesubs.yaml.example`.
-- The current template uses `capture.archive_dir`, which settings ignore. Use `capture.artifacts_dir`, or `LIVESUBS_ARCHIVE_DIR`, to change the output directory.
+- `capture.artifacts_dir`, or `LIVESUBS_ARCHIVE_DIR`, sets the directory for audio and subtitle files.
 
 ## Commands
 
@@ -31,6 +31,7 @@
 | Flag | Applies to |
 | --- | --- |
 | `--host`, `--port`, `--session-id`, `--session-name` | Startup or `--serve`. |
+| `--exit-on-failure` | Startup or `--serve`. Exit with status 1 if the pipeline dies, so a supervisor restarts the process. |
 | `--script`, `--speed`, `--once` | the `sim` approach |
 | `--audio` | A `pw:TARGET` preference for startup, or a direct input with `--serve`. |
 | `--cues PATH` | `--approach live-text` |
@@ -145,7 +146,7 @@ pipeline:
 - The first active candidate with a nonempty key, or with `requires_key: false`, is selected.
 - Unlisted active providers for the role follow the listed candidates. An empty list uses registry order.
 - The selected candidate must still have an adapter. A rejected key or missing adapter does not cause a retry with the next candidate.
-- The template's failover comment does not describe current behaviour. Selection happens once at startup.
+- Selection happens once at startup. Nothing fails over while a session runs.
 - `--check` prints the candidate chain and selection. Unknown names are configuration errors.
 
 ## Validated at startup
@@ -162,9 +163,10 @@ pipeline:
 
 ## Keys
 
+- `--keys`, `--start` and `--serve` warn when a file that may hold keys can be read by other users, and print the `chmod 600` that fixes it.
 - `--set-key NAME` prompts with hidden input (`getpass`), and never accepts a key as a command-line argument, because that exposes it in the process list and shell history.
 - It writes owner-only (`0600`) and atomically.
-- `--scope project` writes the project `.env`. `--scope global` writes `~/.config/livesubs/.env`.
+- `--scope project` writes the `.env` beside this project's `pyproject.toml`, or in the working directory when there is none. A `pyproject.toml` that belongs to another project is ignored. `--scope global` writes `~/.config/livesubs/.env`.
 - `--verify` probes the provider at entry time and does not save a rejected key.
 - `--keys` shows every provider masked to the last four characters, with the resolution source.
 
@@ -183,7 +185,7 @@ uv run livesubs --keys
 ```
 
 - `deepgram` (ASR) and `deepseek` (MT) are active and implemented.
-- `openai` is registered as an active ASR provider, and `build_asr` has no adapter for it, so selecting it raises.
+- `openai` is registered as a planned ASR provider. It can hold a key and satisfies no requirement, because no adapter exists.
 - `deepl` is planned. Its key can be stored and verified, and no adapter exists, so it does not satisfy the MT requirement.
 
 ## Capture

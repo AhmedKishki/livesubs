@@ -60,7 +60,8 @@ capture:
   runtime_calibration: true
   # Archive raw audio, for building an evaluation set. Gitignored.
   archive: true
-  archive_dir: recordings
+  # Audio and subtitle files go here. Relative paths are relative to where you run it.
+  artifacts_dir: recordings
 
 segmentation:
   # The pacing policy. See docs/03-segmentation.md.
@@ -80,13 +81,13 @@ segmentation:
   # provider's endpointing proves too slow or too twitchy.
   trust_provider_endpointing: true
 
-# Which provider serves each stage, in FALLBACK ORDER: the first that has a
-# usable key is used, and the rest are failover. Anything registered for the role
-# but not listed still works, after the listed ones.
+# Which provider serves each stage, in preference order: the first that has a usable
+# key is chosen once, at startup. There is no failover while a session runs. Anything
+# registered for the role but not listed still works, after the listed ones.
 #
 # An empty list means "any active provider for that role, in registry order".
 pipeline:
-  asr: [deepgram, openai]
+  asr: [deepgram]
   mt: [deepseek]
 
 # Providers. Built-in ones can be retuned here; new ones can be declared.
@@ -101,6 +102,7 @@ providers:
       model: nova-3
       # EU data residency: uncomment to keep audio processing inside the EU.
       # url: wss://api.eu.deepgram.com
+  # Registered, but planned: it holds a key and satisfies nothing until an adapter exists.
   openai:
     options:
       model: gpt-live-transcribe

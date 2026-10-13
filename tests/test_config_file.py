@@ -332,31 +332,52 @@ def test_a_provider_can_be_marked_planned_in_the_file(sandbox: Path) -> None:
 # --- pipeline selection ---------------------------------------------------------
 
 
+#: A second recogniser, declared in the file, so the ordering rules are tested with a provider
+#: that is active by construction rather than one that happens to ship as active.
+SECOND_ASR = "providers:\n  acme:\n    role: asr\n"
+
+
 def test_pipeline_order_is_respected(sandbox: Path) -> None:
     resolved = load_settings(
-        write_config(sandbox, "pipeline:\n  asr: [openai, deepgram]\n")
+        write_config(sandbox, SECOND_ASR + "pipeline:\n  asr: [acme, deepgram]\n")
     )
 
-    assert [p.name for p in resolved.providers_for("asr")][:2] == ["openai", "deepgram"]
+    assert [p.name for p in resolved.providers_for("asr")][:2] == ["acme", "deepgram"]
 
 
 def test_unlisted_providers_still_work_after_the_listed_ones(sandbox: Path) -> None:
-    resolved = load_settings(write_config(sandbox, "pipeline:\n  asr: [openai]\n"))
+    resolved = load_settings(write_config(sandbox, SECOND_ASR + "pipeline:\n  asr: [acme]\n"))
 
-    assert [p.name for p in resolved.providers_for("asr")] == ["openai", "deepgram"]
+    assert [p.name for p in resolved.providers_for("asr")] == ["acme", "deepgram"]
 
 
 def test_active_provider_is_the_first_in_the_chain_with_a_key(
     sandbox: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    path = write_config(sandbox, "pipeline:\n  asr: [openai, deepgram]\n")
+    path = write_config(sandbox, SECOND_ASR + "pipeline:\n  asr: [acme, deepgram]\n")
     monkeypatch.setenv("DEEPGRAM_API_KEY", "dg")          # only the second has a key
+    monkeypatch.delenv("ACME_API_KEY", raising=False)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "ds")
 
     resolved = load_settings(path)
 
     assert resolved.active_provider("asr").name == "deepgram"
     assert resolved.validate_for_startup() == []
+
+
+def test_a_recogniser_with_no_adapter_cannot_satisfy_the_requirement(
+    sandbox: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only an OpenAI key set: `--check` used to pass and the session failed to start."""
+
+    monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-only")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "ds")
+
+    resolved = load_settings(write_config(sandbox, "pipeline:\n  asr: [openai, deepgram]\n"))
+
+    assert resolved.active_provider("asr") is None
+    assert any("ASR" in problem for problem in resolved.validate_for_startup())
 
 
 def test_a_pipeline_entry_naming_an_unknown_provider_is_reported(sandbox: Path) -> None:
@@ -410,10 +431,10 @@ def test_the_deployment_config_is_gitignored() -> None:
     port, a session. Committing it would ship one machine's setup to everyone.
     """
 
-    from livesubs.config import repo_root
+    from livesubs.config import checkout_root
 
-    root = repo_root()
-    if _git("rev-parse", "--git-dir", cwd=root) != 0:  # pragma: no cover
+    root = checkout_root()
+    if root is None or _git("rev-parse", "--git-dir", cwd=root) != 0:  # pragma: no cover
         pytest.skip("not a git checkout")
 
     assert _git("check-ignore", "--quiet", CONFIG_FILENAME, cwd=root) == 0
@@ -422,10 +443,10 @@ def test_the_deployment_config_is_gitignored() -> None:
 def test_the_example_config_is_not_gitignored() -> None:
     """The template must be tracked, or a new user has nothing to copy."""
 
-    from livesubs.config import repo_root
+    from livesubs.config import checkout_root
 
-    root = repo_root()
-    if _git("rev-parse", "--git-dir", cwd=root) != 0:  # pragma: no cover
+    root = checkout_root()
+    if root is None or _git("rev-parse", "--git-dir", cwd=root) != 0:  # pragma: no cover
         pytest.skip("not a git checkout")
 
     assert _git("check-ignore", "--quiet", f"{CONFIG_FILENAME}.example", cwd=root) != 0

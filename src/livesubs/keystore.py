@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import tempfile
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -29,6 +31,7 @@ __all__ = [
     "Provider",
     "active_providers",
     "global_env_path",
+    "insecure_files",
     "key_statuses",
     "mask",
     "planned_providers",
@@ -117,9 +120,12 @@ PROVIDERS: dict[str, Provider] = {
     "openai": Provider(
         name="openai",
         env_var="OPENAI_API_KEY",
-        label="OpenAI (alternative streaming ASR)",
+        label="OpenAI (streaming ASR)",
         role="asr",
         hint="platform.openai.com -> API keys",
+        # No adapter exists. Registered as active it satisfied the recognition requirement
+        # in `--check` and failed only when the session started.
+        status="planned",
         options={
             "model": "gpt-live-transcribe",
             # Tunable latency/accuracy trade-off: minimal|low|medium|high|xhigh.
@@ -188,13 +194,26 @@ _LINE_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$")
 
 
 def project_env_path(start: Path | None = None) -> Path:
-    """The project ``.env``, found by walking up to ``pyproject.toml``."""
+    """The project ``.env``: beside this project's ``pyproject.toml``, else the working directory.
+
+    Only a ``pyproject.toml`` that declares this project counts. Walking up to the first
+    one found would pick up whatever other Python project the operator happened to be
+    inside, and read - or write, with ``--set-key`` - that project's ``.env``.
+    """
 
     here = (start or Path.cwd()).resolve()
     for candidate in (here, *here.parents):
-        if (candidate / "pyproject.toml").is_file():
+        if _declares_livesubs(candidate / "pyproject.toml"):
             return candidate / ".env"
     return here / ".env"
+
+
+def _declares_livesubs(pyproject: Path) -> bool:
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return data.get("project", {}).get("name") == "livesubs"
 
 
 def global_env_path() -> Path:
@@ -202,6 +221,26 @@ def global_env_path() -> Path:
 
     base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
     return base / "livesubs" / ".env"
+
+
+def insecure_files(paths: list[Path] | None = None) -> list[Path]:
+    """Existing credential files that other users can read or change.
+
+    Files written here are owner-only, but a file made by hand or by an editor takes the
+    umask, which is usually group-readable. Nothing else checks, and a key in such a file is
+    exactly as exposed as the file.
+    """
+
+    candidates = paths if paths is not None else [project_env_path(), global_env_path()]
+    found = []
+    for path in candidates:
+        try:
+            mode = stat.S_IMODE(path.stat().st_mode)
+        except OSError:
+            continue
+        if mode & 0o077 and path.is_file():
+            found.append(path)
+    return found
 
 
 def mask(value: str) -> str:

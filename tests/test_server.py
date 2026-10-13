@@ -465,3 +465,75 @@ def test_local_only_detection(host: str, expected: bool) -> None:
     and a bind address is not an address anybody else can use at all."""
 
     assert routes._is_local_only(host) is expected
+
+
+# --- where the frontend comes from -------------------------------------------------------
+
+
+def test_an_installed_copy_serves_its_own_frontend_not_the_working_directorys(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: with no checkout to find, the root fell back to the working directory.
+
+    Run from a directory that happened to hold a ``web`` folder, an installed copy served
+    that folder to the whole network instead of its own pages.
+    """
+
+    (tmp_path / "web" / "static").mkdir(parents=True)
+    (tmp_path / "web" / "index.html").write_text("someone else's page")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(routes, "checkout_root", lambda: None)
+
+    chosen = routes.web_dir(Settings(_env_file=None))
+
+    assert chosen != tmp_path / "web"
+    assert chosen == routes.Path(routes.__file__).resolve().parent.parent / "web"
+
+
+def test_a_checkout_serves_the_web_folder_beside_its_pyproject() -> None:
+    from livesubs.config import checkout_root
+
+    root = checkout_root()
+    assert root is not None
+    assert routes.web_dir(Settings(_env_file=None)) == root / "web"
+
+
+def test_healthz_answers_503_when_the_pipeline_has_died() -> None:
+    """A probe that says 200 either way cannot be used to restart a dead pipeline."""
+
+    class Dies:
+        async def run(self, hub, *, session_id, stop):
+            raise RuntimeError("capture exploded")
+
+    with make_client(Dies()) as client:
+        deadline = 50
+        response = client.get("/healthz")
+        while response.status_code == 200 and deadline:
+            deadline -= 1
+            import time
+
+            time.sleep(0.02)
+            response = client.get("/healthz")
+
+        assert response.status_code == 503
+        assert response.json()["ok"] is False
+
+
+def test_a_failing_publisher_calls_the_failure_hook_once() -> None:
+    called = []
+
+    class Dies:
+        async def run(self, hub, *, session_id, stop):
+            raise RuntimeError("capture exploded")
+
+    app = create_app(Settings(_env_file=None), Dies(), on_failure=lambda: called.append(1))
+    with TestClient(app):
+        import time
+
+        for _ in range(50):
+            if called:
+                break
+            time.sleep(0.02)
+
+    assert called == [1]
+    assert app.state.sessions.require("demo").failed is True

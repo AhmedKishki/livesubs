@@ -20,6 +20,7 @@ from livesubs.config import CONFIG_FILENAME, Settings, find_config_file, get_set
 from livesubs.keystore import (
     PROVIDERS,
     global_env_path,
+    insecure_files,
     key_statuses,
     planned_providers,
     project_env_path,
@@ -68,6 +69,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--port", type=int, default=None, help="bind port for --serve (default: 8000)"
+    )
+    parser.add_argument(
+        "--exit-on-failure",
+        action="store_true",
+        help=(
+            "exit with status 1 if the pipeline dies, so a supervisor such as systemd "
+            "restarts the process; without it the server keeps answering and shows 'stopped'"
+        ),
     )
     parser.add_argument(
         "--session-id",
@@ -197,14 +206,15 @@ def _cmd_init_config(target: str) -> int:
 
     import shutil
 
-    from livesubs.config import repo_root
+    from livesubs.config import checkout_root
 
     destination = Path(target).expanduser()
     if destination.exists():
         print(f"{destination} already exists; not overwriting it", file=sys.stderr)
         return 1
 
-    example = repo_root() / f"{CONFIG_FILENAME}.example"
+    root = checkout_root()
+    example = (root or Path(__file__).resolve().parent) / f"{CONFIG_FILENAME}.example"
     if not example.is_file():
         example = Path(__file__).resolve().parent / f"{CONFIG_FILENAME}.example"
     if not example.is_file():
@@ -275,9 +285,21 @@ def _env_path_for(scope: str) -> Path:
     return global_env_path() if scope == "global" else project_env_path()
 
 
+def _warn_insecure_files() -> None:
+    """Say so when a file holding API keys can be read by other users."""
+
+    for path in insecure_files():
+        print(
+            f"warning: {path} can be read by other users and may hold API keys; "
+            f"run: chmod 600 {path}",
+            file=sys.stderr,
+        )
+
+
 def _cmd_keys() -> int:
     """Report which keys are set, and where each came from."""
 
+    _warn_insecure_files()
     statuses = key_statuses()
     print("API keys\n")
     for status in statuses:
@@ -475,6 +497,7 @@ def _cmd_start(args: argparse.Namespace, settings: Settings) -> int:
         raise ValueError("live microphone startup requires Linux with PipeWire")
     if os.geteuid() == 0:
         raise ValueError("run livesubs as your desktop user, not with sudo")
+    _warn_insecure_files()
 
     missing = [binary for binary in ("pw-record", "pw-dump") if shutil.which(binary) is None]
     if missing:
@@ -578,7 +601,16 @@ def _cmd_serve(args: argparse.Namespace, settings: Settings) -> int:
     host = args.host or settings.host
     port = args.port or settings.port
 
-    app = create_app(settings, publisher)
+    failed = False
+
+    def pipeline_died() -> None:
+        nonlocal failed
+        failed = True
+        server.should_exit = True
+
+    app = create_app(
+        settings, publisher, on_failure=pipeline_died if args.exit_on_failure else None
+    )
 
     # When bound to all interfaces, print the LAN address rather than 0.0.0.0, so the
     # URL shown is the one attendees can actually open. The bind address is named rather
@@ -607,16 +639,19 @@ def _cmd_serve(args: argparse.Namespace, settings: Settings) -> int:
     print(f"operator     : {base}/admin", flush=True)
     print(flush=True)
 
-    uvicorn.run(
-        app,
-        host=host,
-        port=port,
-        log_level=settings.log_level,
-        # Without this, uvicorn's own config disables the loggers this package created
-        # before it started, so a served run loses the pipeline's INFO lines.
-        log_config=log_config(settings.log_level),
+    server = uvicorn.Server(
+        uvicorn.Config(
+            app,
+            host=host,
+            port=port,
+            log_level=settings.log_level,
+            # Without this, uvicorn's own config disables the loggers this package created
+            # before it started, so a served run loses the pipeline's INFO lines.
+            log_config=log_config(settings.log_level),
+        )
     )
-    return 0
+    server.run()
+    return 1 if failed else 0
 
 
 async def _cmd_replay(script: str, speed: float) -> int:

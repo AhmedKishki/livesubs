@@ -10,7 +10,7 @@ real lecture.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -60,6 +60,7 @@ def create_app(
     *,
     session_id: str | None = None,
     session_name: str | None = None,
+    on_failure: Callable[[], None] | None = None,
 ) -> FastAPI:
     """Build the application around one session and one publisher."""
 
@@ -76,6 +77,7 @@ def create_app(
             publisher=publisher,
             language=settings.language,
             languages=languages,
+            on_failure=on_failure,
         )
     )
 
