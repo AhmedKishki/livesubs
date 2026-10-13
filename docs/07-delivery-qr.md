@@ -13,7 +13,7 @@
 
 - The QR encodes the resolved viewer URL, for example `http://192.168.1.42:8000/s/7f3a`.
 - The default server uses plain HTTP. The viewer needs no microphone permission because capture happens server-side.
-- The default WebSocket role is `viewer` for German. Arabic requests use `viewer_ar`; neither role receives English source text or the other translation. Unsupported Arabic sessions reject the request with close code `4403`.
+- The default WebSocket role is `viewer` for German. Arabic requests use `viewer_ar`; neither role receives English source text or the other translation. A session that cannot produce Arabic accepts the handshake and then closes with code `4403`, and an unknown session closes with `4404`. The handshake is accepted first because a close sent before it reaches browsers as code 1006, which the viewer treats as a network drop and retries.
 
 ### Address selection
 

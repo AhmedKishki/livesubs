@@ -16,7 +16,7 @@ import anyio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from livesubs.config import Settings
-from livesubs.events import EVENT_VERSION
+from livesubs.events import EVENT_VERSION, WireMessage
 from livesubs.hub import ClientRole, Hub, Subscriber
 
 __all__ = ["build_router"]
@@ -34,6 +34,20 @@ CLIENT_IDLE_TIMEOUT_S = 30.0
 #: The exact query value that opts a client into Arabic. Anything else is German:
 #: an unknown or misspelled role must never silently grant a different language.
 _ARABIC_ROLE = "viewer_ar"
+
+
+async def _refuse(websocket: WebSocket, code: int, reason: str) -> None:
+    """Close a socket the server will never serve, in a way the browser can read.
+
+    The handshake is accepted first, on purpose. A close sent before ``accept`` is
+    answered as an HTTP 403 and the browser reports close code 1006 whatever code was
+    given, so the viewer's "this refusal is permanent" handling never ran and it
+    retried for ever. Nothing is subscribed here, so a refused socket creates no demand
+    for paid work.
+    """
+
+    await websocket.accept()
+    await websocket.close(code=code, reason=reason)
 
 
 def _role_from(value: str | None) -> ClientRole:
@@ -55,9 +69,15 @@ async def _pump(websocket: WebSocket, hub: Hub, subscriber: Subscriber) -> None:
     """Send whatever the mailbox considers current, for as long as it is open."""
 
     while True:
-        with anyio.move_on_after(HEARTBEAT_INTERVAL_S) as heartbeat:
+        batch: list[WireMessage] | None = None
+        with anyio.move_on_after(HEARTBEAT_INTERVAL_S):
             batch = await subscriber.mailbox.receive()
-        if heartbeat.cancel_called:
+        # Decided by whether `receive` returned, not by whether the deadline fired. A
+        # message offered in the same loop iteration as the deadline makes `receive`
+        # return a real batch while the scope still reports itself cancelled, and
+        # treating that as a timeout threw the batch away after the mailbox had
+        # already emptied itself into it.
+        if batch is None:
             await websocket.send_text(json.dumps({"v": EVENT_VERSION, "type": "ping"}))
             continue
         if not batch:
@@ -85,11 +105,12 @@ async def _read_acks(websocket: WebSocket, session_id: str) -> None:
 
         if isinstance(payload, dict) and payload.get("type") == "ack":
             logger.debug(
-                "render ack session=%s seq=%s rev=%s render_ms=%s",
+                "render ack session=%s seq=%s rev=%s rendered_in_ms=%s dropped=%s",
                 session_id,
                 payload.get("seq"),
                 payload.get("rev"),
-                payload.get("render_ms"),
+                payload.get("rendered_in_ms"),
+                payload.get("dropped"),
             )
 
 
@@ -102,20 +123,19 @@ def build_router(settings: Settings) -> APIRouter:
         session = registry.get(session_id)
 
         if session is None:
-            await websocket.close(
-                code=WS_UNKNOWN_SESSION, reason=f"unknown session: {session_id}"
-            )
+            await _refuse(websocket, WS_UNKNOWN_SESSION, f"unknown session: {session_id}")
             return
 
         role = _role_from(websocket.query_params.get("role"))
 
-        # Refuse an Arabic request the publisher cannot serve *before* accepting or
-        # subscribing, so no demand is recorded and no billed provider is opened for
-        # a language that would never produce a line.
+        # Refuse an Arabic request the publisher cannot serve *before* subscribing, so
+        # no demand is recorded and no billed provider is opened for a language that
+        # would never produce a line.
         if role is ClientRole.VIEWER_AR and "ar" not in getattr(session, "languages", ("de",)):
-            await websocket.close(
-                code=WS_UNSUPPORTED_LANGUAGE,
-                reason="Arabic subtitles are not available for this session",
+            await _refuse(
+                websocket,
+                WS_UNSUPPORTED_LANGUAGE,
+                "Arabic subtitles are not available for this session",
             )
             return
 
@@ -143,9 +163,10 @@ def build_router(settings: Settings) -> APIRouter:
                 group.start_soon(receive)
         except* (WebSocketDisconnect, ConnectionError):
             pass
-        except* RuntimeError:
-            # Starlette raises this when the socket is already closing.
-            pass
+        except* RuntimeError as errors:
+            # Starlette raises this when the socket is already closing. It is a broad
+            # type, so what was swallowed is recorded rather than lost.
+            logger.debug("socket closed under a send: %s", errors.exceptions)
         finally:
             session.hub.unsubscribe(subscriber)
             logger.info(
