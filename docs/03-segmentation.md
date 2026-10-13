@@ -11,15 +11,15 @@
 | `endpoint_silence_ms` | 350 | Close after this much trailing silence, once the minimum duration is met. |
 | `max_segment_ms` | 2000 | Close at this duration even during unbroken speech. |
 | `min_segment_ms` | 400 | Hold a shorter run despite a pause or endpoint. |
-| `context_segments` | 2 | Include this many previous English and target-language segments in MT context. |
+| `context_segments` | 2 | Include this many previous source and target-language segments in MT context. |
 | `trust_provider_endpointing` | true | Allow a provider endpoint to close a run. VAD remains a backstop. |
 
 ## Why 2 s
 
-- At 150–210 spoken words per minute, a 2 s segment contains about 5–7 English words. At an assumed reading rate of 200 wpm, those words take about 1.5–2 s to read.
+- At 150–210 spoken words per minute, a 2 s segment contains about 5–7 words of English speech. At an assumed reading rate of 200 wpm, those words take about 1.5–2 s to read.
 - A larger cap gives the translator more of a clause but delays the request. A smaller cap produces shorter fragments and more requests.
 - German subordinate clauses can put verbs at the end, so a short fragment may omit information needed for its translation.
-- The 2 s default is a starting point, not a measured optimum. Compare 1500, 2000 and 3000 ms against real speech and German readability.
+- The 2 s default is a starting point, not a measured optimum. Compare 1500, 2000 and 3000 ms against real speech and the readability of each target language.
 
 ## State machine
 
@@ -47,13 +47,13 @@
 
 ## Draft and revision
 
-- After the source segment closes, MT output is published as `draft` revisions while German text accumulates.
+- After the source segment closes, MT output is published as `draft` revisions while target-language text accumulates.
 - Each update retains the same `seq` and increases `rev`.
 - A completed translation becomes `final`. Later ASR updates do not revise that segment.
 
 ## Context carry
 
-- Each MT request includes up to `context_segments` previous English segments and translations for that target language. German and Arabic contexts remain separate.
+- Each MT request includes up to `context_segments` previous source segments and translations for that target language. Each target language keeps its own context.
 - Previous context can help with references and terminology, but it cannot supply words that the speaker has not said yet.
 - Rolling context travels in the user message. The system prompt stays fixed during a session.
 

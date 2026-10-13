@@ -31,6 +31,7 @@
 | Flag | Applies to |
 | --- | --- |
 | `--host`, `--port`, `--session-id`, `--session-name` | Startup or `--serve`. |
+| `--speaker en\|de` | Startup, `--serve`, `--check` or `--preflight`. The language the presenter speaks. It selects the mode and overrides `session.speaker`. |
 | `--exit-on-failure` | Startup or `--serve`. Exit with status 1 if the pipeline dies, so a supervisor restarts the process. |
 | `--script`, `--speed`, `--once` | the `sim` approach |
 | `--audio` | A `pw:TARGET` preference for startup, or a direct input with `--serve`. |
@@ -85,6 +86,14 @@ uv run livesubs --config /srv/sub/livesubs.yaml --check
 
 - Empty environment values count as unset. An exported nonempty value wins over saved values.
 - `server.port` and `LIVESUBS_PORT` address the same setting.
+
+## Session mode
+
+- `session.speaker`, or `LIVESUBS_SESSION_SPEAKER`, is the language the presenter speaks: `en` (the default) or `de`. `--speaker` overrides it for one run.
+- An English speaker is offered German and Arabic. A German speaker is offered English and Arabic. The first is the default viewer's language.
+- `session.targets` narrows the offered languages and sets their order. For example `targets: [de]` offers German only. A language outside the mode is rejected by `--check`.
+- A `--speaker` that differs from the configured speaker drops `session.targets` from the file, because those were chosen for the other speaker.
+- The recogniser is opened for the speaker's language, and each translator is built for one target of the mode.
 
 ## Groups
 

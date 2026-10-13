@@ -1,6 +1,6 @@
 # Live translated subtitles
 
-`livesubs` turns source-language speech into target-language subtitles displayed on attendees' phones. It supports **English speech → German or Arabic subtitles**.
+`livesubs` turns source-language speech into target-language subtitles displayed on attendees' phones. It supports **English speech → German or Arabic subtitles** and **German speech → English or Arabic subtitles**.
 
 PipeWire captures the microphone on a Linux machine. Deepgram transcribes the speech, DeepSeek translates the text, and the web server sends the subtitles to phone browsers.
 
@@ -42,10 +42,8 @@ livesubs
 2. Enter your [Deepgram](https://console.deepgram.com/) and [DeepSeek](https://platform.deepseek.com/api_keys) API keys when prompted. They are saved for later sessions.
 3. Speak into the microphone while startup checks the signal.
 4. Open the printed landing-page URL and display its QR code.
-5. Attendees join the same network and scan the code. German is the default. Choose **العربية** in the viewer's **Aa** settings for Arabic subtitles.
+5. Attendees join the same network and scan the code. The default subtitle language is German for an English speaker and English for a German speaker. Attendees choose another language, such as **العربية** for Arabic, in the viewer's **Aa** settings.
+
+The session assumes an English speaker. For a German speaker, start it with `livesubs --speaker de`.
 
 Transcription is shared between languages. Each translation runs only while someone requests that language, and all paid processing pauses when the last viewer disconnects. Keep the terminal running during the session. Press Ctrl-C to stop.
-
-## Planned language support
-
-German → English and German → Arabic are planned, not yet implemented.

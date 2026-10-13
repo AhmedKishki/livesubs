@@ -2,7 +2,7 @@
 
 - Prices below are recorded design estimates, not current quotes. Re-check vendor documentation before committing a budget.
 
-## Streaming ASR (English)
+## Streaming ASR
 
 ### Deepgram, the default
 
@@ -10,6 +10,7 @@
 - Registry default host: `wss://api.deepgram.com`, the United States endpoint.
 - EU residency: the `api.eu.deepgram.com` endpoint exists as an opt-in option, not the default.
 - Models: `nova-3` monolingual, `nova-3` multilingual, and `flux-general-en`.
+- Source language: the adapter opens each stream with the session's speaker language, English or German. `nova-3` serves both. `flux-general-en` is English-only, so it cannot serve a German speaker.
 - Price: Nova-3 streaming at **$0.0048/min**, about **$0.43** per 90-minute lecture.
 - Vendor documentation recommends Nova-3 for far-field, noisy and multi-speaker audio.
 - Capture format: 16 kHz mono `linear16`, the format the capture path already produces.
@@ -32,9 +33,11 @@
 - Speechmatics: realtime translation with `enable_partials`, a custom dictionary of up to 20,000 items, an on-premise GPU container, 48-hour sessions, and an Audio filtering feature that removes background speech. It is not registered.
 - AssemblyAI: not evaluated in depth.
 
-## Machine translation (English to German or Arabic)
+## Machine translation
 
-- The recorded cost and quality comparisons below use English-to-German workloads. Arabic costs and quality have not been measured against the corpus.
+- A session translates from the speaker's language, English or German, into the targets of its mode: German and Arabic for an English speaker, English and Arabic for a German speaker.
+- The recorded cost and quality comparisons below use English-to-German workloads. Arabic and German-to-English costs and quality have not been measured against the corpus.
+
 ### DeepSeek `deepseek-flash`, the default
 
 - Protocol: OpenAI-compatible at `base_url = https://api.deepseek.com`, so the `openai` SDK client serves it.
@@ -59,7 +62,7 @@
 - It can bake a glossary into the frozen system prompt. No glossary is configured, so the list is empty.
 - It does not use JSON output or Chat Prefix Completion.
 - It calls `warm()` before the first segment. Cache construction can take seconds, but warming does not guarantee a cache hit or response time.
-- German and Arabic use separate frozen target prompts with the same configured provider and key. Arabic is constructed and warmed only when explicitly requested, and either language stops making requests when its audience is empty.
+- Each target language has its own frozen prompt, built from the speaker's language and that target, with the same configured provider and key. A target is constructed and warmed only when someone reads it, and it stops making requests when its audience is empty.
 - Recorded API observations put DeepSeek time to first token at 489–909 ms per segment. The run date and corpus were not recorded with those observations, so the range is not a performance guarantee.
 - Vendor features not used by the adapter include Chat Prefix Completion (beta), which pre-fills an assistant reply, and JSON Output, which constrains a response to an object such as `{"de": "..."}`.
 

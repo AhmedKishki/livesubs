@@ -5,15 +5,17 @@
 | Path | Audience | Purpose |
 | --- | --- | --- |
 | `/` | attendees | landing page with the QR code, join instructions and session name |
-| `/s/{session_id}` | attendees | the subtitle page, and the QR target |
-| `/s/{session_id}?lang=ar` | attendees requesting Arabic | the Arabic subtitle page |
-| `/admin` | operator | current source and German text, final-line history, status, connection count and local render duration |
+| `/s/{session_id}` | attendees | the subtitle page in the session's default language, and the QR target |
+| `/s/{session_id}?lang=ar` | attendees requesting another language | the subtitle page in that language, here Arabic |
+| `/admin` | operator | the speaker's words and every target language, final-line history, status, connection count and local render duration |
 | `/ws/{session_id}` | viewer and operator pages | WebSocket for `segment`, `status`, `hello` and `error` messages |
 | `/qr.png` | landing page | rendered QR for the current session |
 
 - The QR encodes the resolved viewer URL, for example `http://192.168.1.42:8000/s/7f3a`.
 - The default server uses plain HTTP. The viewer needs no microphone permission because capture happens server-side.
-- The default WebSocket role is `viewer` for German. Arabic requests use `viewer_ar`; neither role receives English source text or the other translation. A session that cannot produce Arabic accepts the handshake and then closes with code `4403`, and an unknown session closes with `4404`. The handshake is accepted first because a close sent before it reaches browsers as code 1006, which the viewer treats as a network drop and retries.
+- The default WebSocket role is `viewer`, which receives the session's first target language. Another language uses `viewer_<code>`, for example `viewer_ar`. No viewer role receives the speaker's own words or another language. A session that cannot produce the requested language accepts the handshake and then closes with code `4403`, and an unknown session closes with `4404`. The handshake is accepted first because a close sent before it reaches browsers as code 1006, which the viewer treats as a network drop and retries.
+- The viewer page asks `/api/session` for the offered languages and does not open a socket for one the session does not offer. The server refusal covers a page built from a stale description.
+- Roles are a content filter, not access control. The service is unauthenticated, so any device on the network can request `admin` or another language. Keep it on a trusted LAN.
 
 ### Address selection
 
@@ -86,7 +88,7 @@
 
 ## Operator console
 
-- `/admin` shows English recognition output and German translation side by side for comparison.
+- `/admin` shows the speaker's recognised words and one line per target language for comparison. A history row collects the translations of one segment as they arrive.
 - It shows the segment history of committed lines.
 - It shows the pipeline status.
 - It polls the viewer count about once a second. Operator connections do not count as viewers or keep paid processing active.
@@ -106,9 +108,10 @@
 ## Landing page content
 
 - The landing page shows the QR code, a join URL and the session title.
-- It identifies the subtitles as German and says no app or login is needed.
+- It speaks the session's default language, which is the language the QR code opens.
+- It says the subtitles are live, that no app or login is needed, and that only display settings are stored on the device. It adds that the audio is recorded when the running publisher archives audio.
 
 ## Viewer data
 
 - Viewer devices do not capture audio. They make page requests, send acknowledgement fields and save display preferences in `localStorage`.
-- The current landing-page claim that nothing is stored or transmitted is too broad. Provider processing and server recording need a separate disclosure before a lecture.
+- The landing page no longer claims that nothing is transmitted. It does not disclose provider processing: the audio goes to the recognition provider and the text to the translation provider. The operator must give that disclosure separately before a lecture.

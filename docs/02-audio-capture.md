@@ -163,14 +163,15 @@ pw-record \
 
 ```text
 demo-20260922-150745.wav       16 kHz mono, the audio the timings refer to
-demo-20260922-150745.de.srt    output from the selected MT adapter
-demo-20260922-150745.en.srt    English source text from the selected mode
+demo-20260922-150745.de.srt    output from the selected MT adapter, here German
+demo-20260922-150745.en.srt    the speaker's words, here English
 demo-20260922-150745.de.vtt    the same MT output, for a browser <track>
 demo-20260922-150745.en.vtt
 ```
 
 - `capture.subtitles` enables the subtitle writer.
-- Requested Arabic translations also produce `.ar.srt` and `.ar.vtt` on the same audio clock. The English source file is currently written by the German stream, so Arabic-only sessions do not produce English source cues.
+- Each target language that someone read has its own `.{code}.srt` and `.{code}.vtt` pair on the same audio clock, for example `.ar.srt`. The speaker's words are written once per segment, by whichever translation of it arrives first, so a session that only Arabic viewers read still produces the source file.
+- For a German speaker the source file is `.de.srt` and the targets are `.en` and `.ar`.
 - SRT and WebVTT are both produced because different tools consume them. Both come from one cue model, so they cannot disagree about timings.
 | Mode | English sidecar | MT sidecar |
 | --- | --- | --- |

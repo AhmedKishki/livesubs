@@ -5,7 +5,7 @@
 ## Constraints
 
 - Keep live microphone capture server-side on Linux with PipeWire. Do not move capture into the browser.
-- Keep the default viewer German-only. Arabic requires the explicit `viewer_ar` role. Filter other translations and English source text on the server for each viewer role.
+- Derive the target languages from the speaker language: an English speaker has German and Arabic listeners, and a German speaker has English and Arabic listeners. Keep the default viewer on the mode's first target only. Every other target requires its explicit `viewer_<code>` role. Filter other translations and the source text on the server for each viewer role.
 - Keep paid transcription paused without viewers and each translation paused without demand for its target language.
 - Keep provider transport, types, and exceptions behind the ASR and MT protocols.
 - Reject unavailable live adapters or credentials instead of substituting simulated output.
@@ -19,7 +19,7 @@
 - Leave `livesubs.yaml` gitignored unless the user explicitly asks to version a deployment.
 - Keep key prompts hidden and saved credential files owner-only (`0600`) with atomic writes.
 - Do not log keys or full request headers. Preserve the raw-export warning for the explicit `--no-save` option.
-- Do not log English or German lecture text at INFO level.
+- Do not log lecture text, in any language, at INFO level.
 
 ## Checks
 

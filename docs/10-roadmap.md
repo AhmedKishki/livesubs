@@ -6,13 +6,13 @@
 - Aggregate viewer acknowledgement durations and drop counts. The operator's dropped-count field currently has no incoming data.
 - Implement clock alignment before reporting end-to-end latency percentiles. `rendered_in_ms` measures only client-side handling, and `timing.render_ms` is unused.
 - Add session start, stop and restart controls, with re-warming after a glossary change.
-- Localise server status details before passing them to the German viewer.
+- Localise server status details before passing them to viewers.
 
 ## Failure handling
 
 - Reconnect ASR with backoff when the socket drops.
 - Switch to the next configured adapter when `healthy` reports failure.
-- Add an explicit MT outage fallback that emits no text rather than substituting English.
+- Add an explicit MT outage fallback that emits no text rather than substituting the speaker's language.
 - Monitor `AudioSource.alive` and stalled reads so a dead microphone changes the session status instead of leaving it `live`.
 
 ## Quality
@@ -22,13 +22,13 @@
 - Compare provider quality and latency on the same corpus.
 - Measure fragment grammaticality when tuning `max_segment_ms`.
 - Generate a corrected transcript from archived audio with a post-lecture recognition pass.
-- Add a bilingual viewer mode through a separate opt-in role. No English viewer toggle exists today.
+- Add a bilingual viewer mode through a separate opt-in role. No viewer shows the speaker's words beside the translation today.
 - Evaluate stable-prefix translation using the LocalAgreement idea from `ufal/whisper_streaming` and `SimulStreaming`. The current pipeline starts MT after source commitment, not after prefix agreement.
 
 ## Language support
 
-- Add German speech recognition with English subtitle output.
-- Add German speech recognition with Arabic subtitle output.
+- Measure recognition, translation quality and cost for a German speaker and for Arabic subtitles. Only English-to-German has corpus measurements.
+- Have a reader of Arabic review the Arabic prompt, the simulated Arabic lines and the Arabic viewer strings. No such review is recorded.
 
 ## Deployment
 
@@ -48,5 +48,5 @@
 | Multi-microphone beamforming | independent microphones cannot provide synchronised channels |
 | A local ASR adapter | No local recogniser was selected for the reference machine without a GPU. Local MT can already use `adapter: openai_compat` and `requires_key: false`. |
 | Projector overlay | A browser cannot draw over another application. OBS can instead use the viewer page as a browser source. |
-| Diarization, audience Q&A, German TTS | need a second audio source and per-speaker handling |
-| Scrolling transcript, word-level karaoke | The viewer renders one current subtitle. English timings do not directly align German word order. |
+| Diarization, audience Q&A, speech synthesis | need a second audio source and per-speaker handling |
+| Scrolling transcript, word-level karaoke | The viewer renders one current subtitle. Source timings do not directly align target word order. |

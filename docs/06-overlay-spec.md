@@ -24,7 +24,7 @@
   line-height: 1.28;
   font-weight: 600;
   text-wrap: balance;
-  hyphens: auto;                /* needs lang="de" on the element */
+  hyphens: auto;                /* needs the lang attribute on the element */
   overflow-wrap: break-word;
   min-height: 2.56em;           /* reserve two lines */
 }
@@ -40,7 +40,7 @@
 
 - Font stack: `Inter, "Source Sans 3", system-ui, sans-serif`.
 - Avoid condensed and display faces for long compound nouns. The 15–20% character-growth estimate is a layout assumption, not a bound on translations or pixel width.
-- Set `lang="de"` on the subtitle element and use `hyphens: auto`. German contains long compounds, and hyphenation silently does nothing if the language attribute is missing.
+- Set `lang` to the viewer's language on the subtitle element and use `hyphens: auto`. German contains long compounds, and hyphenation silently does nothing if the language attribute is missing. The element also carries `dir` from the language, so Arabic lays out right-to-left.
 - Use weight 600 with normal letter-spacing. Do not use all-caps.
 
 ## Visual states
@@ -95,11 +95,14 @@ MIN_VISIBLE_MS = 800                                   // when it may be REPLACE
 | font size | 5 steps | yes |
 | position | bottom / top | yes |
 | backdrop | box / shadow / outline | yes |
-| language | German or explicit Arabic | URL, not local storage |
+| language | any language the session offers | URL, not local storage |
 | fullscreen | button | no |
 
-- Defaults are German-only with the box backdrop.
-- Arabic uses `?lang=ar`, `lang="ar"` and right-to-left text direction. The overlay ignores the other language before applying pacing.
+- Defaults are the session's first target language with the box backdrop: German for an English speaker, English for a German speaker.
+- Another language uses `?lang=<code>`, for example `?lang=ar`. The page reads the offered languages, their names and their direction from `/api/session`, and builds the picker from them. The picker is absent when the session offers one language.
+- The overlay renders segments of its own language only and ignores the rest before applying pacing. A page whose `hello` names a different language than the page asked for reloads once, because the server restarted in another mode.
+- A language the session does not offer shows an "unavailable" notice in that language and opens no socket. The picker stays available.
+- Interface strings come from a pack per language in [language.js](../web/static/language.js). A language without a pack uses English strings and takes its name and direction from the session.
 
 ## Status handling
 
@@ -113,7 +116,7 @@ MIN_VISIBLE_MS = 800                                   // when it may be REPLACE
 
 - Target WCAG 2.2 AA contrast against each backdrop. Verify contrast instead of treating the target as a measured result.
 - Respect `prefers-reduced-motion` by skipping the cross-fade and using instant swaps.
-- Set the page and text span language to `de` or `ar` for the selected viewer language.
+- Set the page and text span language and direction to those of the selected viewer language.
 - Convey no text by colour or position alone.
 - Use JavaScript-driven layout only. Do not put meaningful text in CSS `content`.
 
@@ -122,12 +125,12 @@ MIN_VISIBLE_MS = 800                                   // when it may be REPLACE
 - Check clipping and off-screen layout in a browser render.
 - The check needs Node and a Chrome or Chromium binary, so it is optional tooling.
 - `uv run python tools/check_overlay_layout.py` measures a small phone, a typical phone and a laptop.
-- `uv run python tools/check_overlay_layout.py --language ar` checks Arabic layout and right-to-left clipping at the same sizes.
+- `uv run python tools/check_overlay_layout.py --language ar` checks Arabic layout and right-to-left clipping at the same sizes. `--language en` checks English. Every language is measured on the simulated lecture's lines.
 - `uv run python tools/check_overlay_layout.py --backdrop shadow --shot /tmp/overlay.png` also writes a screenshot. The box backdrop uses `backdrop-filter`, which headless Chrome does not paint, so a screenshot needs `--backdrop shadow`.
 - The tool fails when a line is clipped, laid out past the bottom edge, or emptied after it appears.
 
 ## Unsupported features
 
-- English word timings do not provide German word alignment. Word-by-word karaoke is not implemented.
+- Source word timings do not provide target-language word alignment. Word-by-word karaoke is not implemented.
 - The viewer has no speaker labels and assumes a single presenter.
 - The viewer has no scrolling transcript. Final-line history is available in the operator page.

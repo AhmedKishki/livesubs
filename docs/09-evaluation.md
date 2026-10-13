@@ -52,6 +52,8 @@
 
 ### MT (English to German)
 
+- The corpus, references and metrics in this document are English-to-German. German-to-English and Arabic output have not been evaluated.
+
 - `evaluation.chrf_sentence` and `evaluation.chrf_corpus` compute character n-gram agreement. Character matching preserves partial overlap between compounds and inflected forms, but valid rephrasing can still lower a score.
 - **Numeral adherence**, implemented as `evaluation.number_preservation`. It counts source numerals that survive into the German, without a German reference.
 - **Source-echo fraction**, implemented as `evaluation.identical_to_source_fraction`, to catch a translator that returns its input unchanged.

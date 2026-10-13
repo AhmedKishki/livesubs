@@ -28,7 +28,9 @@
 | [__main__.py](../src/livesubs/__main__.py) | Installed command dispatch, startup checks, and server entry points. | Changing CLI behaviour. |
 | [launcher.py](../src/livesubs/launcher.py) | Microphone choice and credential setup before serving. | Changing live startup. |
 | [audio/selection.py](../src/livesubs/audio/selection.py) | Arrow-key selection and terminal restoration. | Changing terminal input. |
-| [language.js](../web/static/language.js) | Viewer language selection, role mapping and target text filtering. | Changing German or Arabic viewer behaviour. |
+| [languages.py](../src/livesubs/languages.py) | The language registry and the speaker-language modes. | Adding a language or a mode. |
+| [language.js](../web/static/language.js) | Viewer language selection, role mapping, interface strings and target text filtering. | Changing viewer language behaviour. |
+| [pipeline/](../src/livesubs/pipeline/) | The live pipeline: on-demand lifecycle, recogniser session, per-language translation workers and health reporting. | Changing how paid work starts, stops or reports problems. |
 | [transcript.py](../src/livesubs/transcript.py) | Assembles recognition events into the text of each segment. | Changing how segment text is built. |
 | [events.py](../src/livesubs/events.py) | Authoritative message models and protocol version. | Changing the wire schema. |
 | [asr/base.py](../src/livesubs/asr/base.py) and [mt/base.py](../src/livesubs/mt/base.py) | Adapter protocols and context types. | Implementing recognition or translation. |

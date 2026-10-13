@@ -2,7 +2,7 @@
 
 ## What this is
 
-- A server captures one presenter's English speech and publishes German or requested Arabic subtitles to attendees' phones.
+- A server captures one presenter's speech and publishes subtitles in the listener's language to attendees' phones.
 - Attendees open the viewer page by scanning a QR code on the shared network.
 - Capture runs on the server. The viewer page asks for no microphone permission, so it works over plain HTTP.
 
@@ -20,15 +20,19 @@
 - API-based processing needs no local GPU. A local OpenAI-compatible translator can also be configured, with performance dependent on the model and hardware.
 - Audio sources and providers can be replaced without changing the viewer's message format.
 
-## Language direction
+## Language modes
 
-- Input is English audio. The default viewer renders German. An explicit Arabic viewer receives Arabic instead, with server-side language filtering.
-- The English source stays in the pipeline and reaches the operator console, so a mistranslation can be diagnosed.
+- The speaker language selects the mode. An English speaker has German and Arabic listeners, and a German speaker has English and Arabic listeners. The mode is chosen at startup with `--speaker`, `LIVESUBS_SESSION_SPEAKER` or `session.speaker`.
+- The default viewer receives the mode's first target: German for an English speaker, English for a German speaker. Arabic and every other target need the viewer's explicit choice.
+- The server sends each viewer one language only and strips the speaker's own words, so filtering never depends on the viewer page.
+- The source text stays in the pipeline and reaches the operator console, so a mistranslation can be diagnosed.
+- `session.targets` can narrow a mode to some of its targets. Adding a language or a mode is a registry entry described in [11-extending](11-extending.md).
 
 ## Non-goals
 
 - The shipped approach does not include local speech recognition.
 - The application does not combine independent microphones for beamforming.
 - The viewer cannot overlay another application on a projector.
-- Speaker diarization, audience Q&A and German speech synthesis are not supported.
+- Speaker diarization, audience Q&A and speech synthesis are not supported.
+- Speakers of languages other than English and German are not supported.
 - The service has no accounts or authentication. Saved audio and subtitle files are optional, but there is no persistent session database.

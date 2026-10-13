@@ -16,6 +16,12 @@ livesubs --serve --approach live --audio pw:TARGET
 ```
 
 - A direct `--serve` invocation skips the interactive picker and startup probes.
+- The speaker language selects the mode: `--speaker en` (the default) serves German and Arabic listeners, and `--speaker de` serves English and Arabic listeners. `LIVESUBS_SESSION_SPEAKER` and `session.speaker` set the same thing, and `session.targets` narrows the offered languages.
+
+```bash
+livesubs --speaker de
+```
+
 - In a terminal, startup always asks for confirmation from the microphone list. In a service, configure `capture.target` and store credentials first. An unspecified source is rejected even if there is only one microphone.
 - The user unit runs `~/.local/bin/livesubs --start` from the user's home directory. If uv uses a custom executable directory, adjust `ExecStart`. Set an absolute `capture.artifacts_dir` if recordings should be saved elsewhere.
 
@@ -67,7 +73,7 @@ sudo ufw allow 8000/tcp comment 'livesubs'
 | 1 | Capture target present | `uv run livesubs --preflight` | the configured source exists |
 | 2 | Capture carries signal | speak during preflight | a measured speech signal, not digital silence |
 | 3 | Capture not clipping | the `--preflight` clipping line | no clipping |
-| 4 | Language pairing sane | speak 10 s of test English | German appears, roughly correct |
+| 4 | Language pairing sane | speak 10 s of test speech in the speaker's language, with a viewer connected for each language to offer | each language appears, roughly correct |
 | 5 | Latency acceptable | per-segment latency lines during rehearsal | no growing lag |
 | 6 | QR reachable | one phone, mobile data off | the page loads |
 | 7 | Providers verified | the launcher probe, or `uv run livesubs --set-key NAME --verify` | the provider accepts the key |
@@ -97,12 +103,13 @@ sudo ufw allow 8000/tcp comment 'livesubs'
 
 | Condition | Current report |
 | --- | --- |
-| At least 4 finals wait for translation (`lag_queue_limit`). | The pipeline publishes `delayed`. |
+| At least 3 finals wait for one language's translation (`lag_queue_limit`). | The pipeline publishes `delayed` to that language's viewers only. |
 | Startup calibration is active or fails. | The reporter publishes `delayed`, with a capture error on failure. A startup failure then stops the publisher. |
 | Runtime gain protection gives up. | The operator console shows a capture error, the original gain is restored when it can be verified as safe, and capture continues with the protection off. |
 | ASR events raise in the collector. | The pipeline publishes an ASR error, without switching providers. |
 | MT raises or returns no text. | One quick retry. If it still fails, the segment is dropped with an MT error, or finished with a trailing `…` if words were already shown. Later segments continue. |
-| MT is slower than the speaker. | `delayed` at 3 queued segments. Past 6 the oldest queued segments are discarded. |
+| MT is slower than the speaker. | `delayed` for that language at 3 queued segments. Past 6 the oldest queued segments are discarded. Other languages are unaffected. |
+| A translator cannot be built or warmed. | That language shows `delayed` and its start is retried with backoff. Other languages and recognition continue. |
 
 ## Logging
 
@@ -127,18 +134,18 @@ sudo ufw allow 8000/tcp comment 'livesubs'
 | --- | --- | --- |
 | No subtitles at all | capture target wrong or muted | check pre-flight 1 and 2. A muted default microphone is the usual cause |
 | Subtitles frozen but the status is live | capture is delivering silence, or recognition stopped without its socket closing | check the microphone and the terminal; restart the session |
-| No German for a segment | the translation returned nothing | the pipeline drops the segment and publishes an error. Check the MT key and the provider log |
+| No translation for a segment | the translation returned nothing | the pipeline drops the segment and publishes an error. Check the MT key and the provider log |
 | Growing lag over minutes | translation backlog | inspect terminal timings, provider response times and host CPU load |
 | No viewer can connect | host firewall, wrong URL or WiFi isolation | test the printed LAN address, check the firewall, then try a network without isolation |
 | Some viewers connect, some not | weak WiFi or power saving | use the wired uplink and disable WiFi power saving |
 | Requested language starts slowly | cache cold or provider response time | Inspect request timings after connecting that language's viewer. |
-| German is grammatically odd | segments too short | raise `max_segment_ms` and check context carry |
-| German is over-condensed | segments too long | lower `max_segment_ms` |
+| Translation is grammatically odd | segments too short | raise `max_segment_ms` and check context carry |
+| Translation is over-condensed | segments too long | lower `max_segment_ms` |
 
 ## Rehearsal
 
 - Run at least one full 90-minute rehearsal in the actual hall, with the actual network and the actual audio setup.
-- Have a bilingual reviewer read the German output.
+- Have a reviewer who reads each target language read that language's output.
 - Unit tests do not establish acoustic quality or network reachability in the deployment room.
 
 ### Rehearsal tool
@@ -148,12 +155,13 @@ sudo ufw allow 8000/tcp comment 'livesubs'
 - The tool starts the server, waits for its readiness log, then starts the player. This reduces manual timing error after provider startup, but is not sample-accurate audio synchronisation.
 - Ctrl-C stops the player and the server together. The server sets `PR_SET_PDEATHSIG`, so it dies with the tool. The player does not, so a player can survive a `SIGKILL` of the tool, and it exits at the end of the file.
 - `--no-play` runs without sound.
+- `--speaker de` rehearses a German speaker.
 - `--player` takes any command containing `{file}`.
 - The default player is the first available of `gst-play-1.0`, `pw-play` and `aplay`, so one of them must be installed for sound.
 
 ## Probing the socket
 
 - `uv run python tools/ws_probe.py --count 6` connects to the WebSocket the way a phone does and prints what arrives.
-- Its defaults are host `127.0.0.1`, port `8000`, session `demo` and role `viewer`, so it matches a default `--serve` run.
+- Its defaults are host `127.0.0.1`, port `8000`, session `demo` and role `viewer`, so it matches a default `--serve` run. `--role viewer_ar` probes another language and `--role admin` shows every language and the source.
 - Pass `--session` when the running session id differs, and `--host` when the server is elsewhere.
 - It distinguishes three causes of a blank page: the server is not running, the session id is wrong, or the socket connects but nothing is published.

@@ -32,9 +32,16 @@ session:
   # Appears in the viewer URL and the QR code.
   id: demo
   name: Live subtitles
-  # The only language a viewer renders. The English source is stripped on the
-  # server, so a viewer's device never receives it.
-  language: de
+  # The language the presenter speaks, which selects the mode:
+  #   en  listeners read German (the default) or Arabic
+  #   de  listeners read English (the default) or Arabic
+  # A plain QR scan reaches the default language. Another language needs the viewer's
+  # explicit choice. The speaker's own words are stripped on the server, so a viewer's
+  # device never receives them.
+  speaker: en
+  # Offer only some of the mode's languages, in this order. The first is the default.
+  # Empty offers all of them.
+  # targets: [de]
   # Where the frontend is served from. Unset means <repository>/web.
   # web_dir: /srv/livesubs/web
 
