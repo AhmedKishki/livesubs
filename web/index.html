@@ -1,31 +1,27 @@
 <!doctype html>
 <!-- Landing page: one screen, one job. The QR code, the URL in plain text for
-     anyone who cannot scan, and a short reassurance about privacy. -->
-<html lang="de">
+     anyone who cannot scan, and a short statement of what the service does with a
+     device. The page speaks the session's default language, which is the language
+     the QR code opens (docs/07-delivery-qr.md). -->
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark" />
     <meta name="robots" content="noindex" />
-    <title>Untertitel – Beitreten</title>
+    <title>Subtitles</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body class="page">
     <main class="join">
-      <h1 id="session-name">Untertitel</h1>
+      <h1 id="session-name">Subtitles</h1>
 
-      <img id="qr" class="join-qr" alt="QR-Code zum Scannen" />
-      <p id="qr-error" class="join-note" hidden>
-        QR-Code konnte nicht geladen werden. Bitte die Adresse unten verwenden.
-      </p>
+      <img id="qr" class="join-qr" alt="QR code to scan" />
+      <p id="qr-error" class="join-note" hidden></p>
 
       <p class="join-url"><a id="join-url" href="#">…</a></p>
 
-      <ul class="join-notes">
-        <li>Deutsche Untertitel, live</li>
-        <li>Keine App, kein Login</li>
-        <li>Auf Ihrem Gerät wird nichts gespeichert oder übertragen</li>
-      </ul>
+      <ul id="join-notes" class="join-notes"></ul>
     </main>
     <script type="module" src="/static/landing.js"></script>
   </body>

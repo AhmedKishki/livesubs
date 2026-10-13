@@ -17,6 +17,7 @@ of the test suite:
 
     uv run python tools/check_overlay_layout.py
     uv run python tools/check_overlay_layout.py --language ar
+    uv run python tools/check_overlay_layout.py --language en
     uv run python tools/check_overlay_layout.py --shot /tmp/phone.png
 """
 
@@ -33,6 +34,8 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+
+from livesubs.languages import LANGUAGES
 
 __all__ = ["VIEWPORTS", "main"]
 
@@ -64,20 +67,6 @@ CHROME_CANDIDATES = (
     "chromium-browser",
 )
 
-#: Arabic lines for `--language ar`. Fixed examples rather than anything
-#: translated through an API: the layout check must be deterministic and must not
-#: need credentials. They mirror the German lines in length and content so the two
-#: languages are measured under comparable pressure, and carry long unbreakable
-#: words to exercise RTL wrapping.
-ARABIC_LINES: tuple[str, ...] = (
-    "اليوم سننظر في التذبذبات المخمّدة.",
-    "يتناقص السعة أُسّيًا مع مرور الوقت.",
-    "يحدّد ثابت التخميد مدى سرعة فقدان الطاقة.",
-    "اكتب هذا، لأنه سيظهر في الاختبار.",
-    "لنعتبر كتلة على نابض في وسط لزج.",
-    "ينزاح تردد الرنين قليلًا.",
-)
-
 #: The page under test. It declares the same viewport meta as the viewer page, because
 #: without it mobile emulation falls back to a 980px layout viewport and the measurement
 #: describes a tablet instead of the phone the report came from.
@@ -97,17 +86,17 @@ HARNESS_HTML = """<!doctype html>
 
       const LINES = __LINES__;
       const LANGUAGE = "__LANGUAGE__";
-      const FIELD = LANGUAGE === "ar" ? "ar" : "de";
 
       const overlay = new SubtitleOverlay(document.getElementById("root"), {
         language: LANGUAGE,
+        dir: "__DIR__",
         prefs: { fontScale: 1, position: "__POSITION__", backdrop: "__BACKDROP__" },
       });
 
       const rows = LINES.map((text, index) => {
         // Far enough apart that the pacing policy accepts every line as new.
         overlay.offer(
-          { seq: index, rev: 0, state: "final", language: LANGUAGE, [FIELD]: text, src: null },
+          { seq: index, rev: 0, state: "final", language: LANGUAGE, text, src: null },
           performance.now() + index * 60_000,
         );
 
@@ -263,30 +252,27 @@ def _wait_for(url: str, timeout: float) -> bool:
     return False
 
 
-def _lines_under_test(language: str = "de") -> list[str]:
+def _lines_under_test(language: str) -> list[str]:
     """The lines the simulated lecture actually sends, so the check tracks the content.
 
     Reads `livesubs.sim` rather than copying the strings, because a stale copy is how a
-    layout check quietly stops testing anything. Arabic has no simulated lecture, so it
-    uses the fixed :data:`ARABIC_LINES` instead of anything produced through an API.
+    layout check quietly stops testing anything. The simulation speaks every language the
+    viewer can be in, so each is measured on the same lecture.
     """
-
-    if language == "ar":
-        return list(ARABIC_LINES)
 
     from livesubs.sim import SCRIPTS
 
     script = SCRIPTS["default"]
-    return [segment.de_final for segment in script.segments]
+    return [segment.final[language] for segment in script.segments]
 
 
 def _write_harness(directory: Path, *, position: str, backdrop: str, language: str) -> Path:
     body_class = "is-top-host" if position == "top" else ""
-    html_lang, direction = ("ar", "rtl") if language == "ar" else ("de", "ltr")
+    direction = LANGUAGES[language].direction
     html = (
         HARNESS_HTML.replace("__LINES__", json.dumps(_lines_under_test(language), ensure_ascii=False))
         .replace("__LANGUAGE__", language)
-        .replace("__HTML_LANG__", html_lang)
+        .replace("__HTML_LANG__", language)
         .replace("__DIR__", direction)
         .replace("__POSITION__", position)
         .replace("__BACKDROP__", backdrop)
@@ -415,11 +401,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--language",
-        choices=("de", "ar"),
+        choices=sorted(LANGUAGES),
         default="de",
         help=(
-            "which viewer language to measure (default: de). Arabic renders the `ar` "
-            "field right-to-left; its lines are the fixed ARABIC_LINES fixtures"
+            "which viewer language to measure (default: de). Arabic lays out "
+            "right-to-left; every language is measured on the simulated lecture's lines"
         ),
     )
     args = parser.parse_args(argv)

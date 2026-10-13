@@ -1,37 +1,62 @@
 // Operator console.
 //
 // It consumes the same WebSocket and the same wire contract as the viewer page,
-// but with role=admin, which is what makes the English source available. Nothing
-// else differs, so the console cannot drift from what attendees actually see.
+// but with role=admin, which is what makes the speaker's own words and every language
+// of the session available. Nothing else differs, so the console cannot drift from
+// what attendees actually see.
 
 import { ViewerClient } from "./client.js";
+import { directionOf, nativeNameOf } from "./language.js";
 
 const MAX_HISTORY = 30;
 
-function makeAdminView() {
+function line(session, language, text, className) {
+  const element = document.createElement("p");
+  element.className = className;
+  element.lang = language;
+  element.dir = directionOf(language, session);
+  element.textContent = text;
+  return element;
+}
+
+function makeAdminView(session) {
   const statusEl = document.getElementById("stat-status");
   const viewersEl = document.getElementById("stat-viewers");
   const droppedEl = document.getElementById("stat-dropped");
   const seqEl = document.getElementById("stat-seq");
   const renderEl = document.getElementById("stat-render");
-  const deEl = document.getElementById("live-de");
+  const liveEl = document.getElementById("live-lines");
   const srcEl = document.getElementById("live-src");
   const historyEl = document.getElementById("history");
 
-  const history = [];
+  // One row per language, in the order the session offers them, each labelled with the
+  // language's own name so the operator can see which line is which.
+  const liveLines = new Map();
+  for (const language of session.languages) {
+    const label = document.createElement("span");
+    label.className = "admin-lang";
+    label.textContent = nativeNameOf(language, session);
+    const text = line(session, language, "–", "admin-line");
+    liveEl.append(label, text);
+    liveLines.set(language, text);
+  }
+
+  // A line is committed in every language separately, so a history row is keyed by the
+  // segment's `seq` and collects whichever translations have arrived for it.
+  const history = new Map();
 
   function renderHistory() {
+    const rows = [...history.values()].sort((a, b) => b.seq - a.seq);
     historyEl.replaceChildren(
-      ...history.map((entry) => {
+      ...rows.map((entry) => {
         const item = document.createElement("li");
-        const de = document.createElement("span");
-        de.lang = "de";
-        de.className = "admin-de";
-        de.textContent = entry.de;
+        for (const language of session.languages) {
+          item.append(line(session, language, entry.lines[language] ?? "…", "admin-line"));
+        }
         const src = document.createElement("span");
         src.className = "admin-src";
         src.textContent = entry.src ?? "–";
-        item.append(de, src);
+        item.append(src);
         return item;
       }),
     );
@@ -39,21 +64,23 @@ function makeAdminView() {
 
   return {
     offer(segment, receivedAt) {
-      // The console keeps the German view. When the server sends both languages
-      // to an admin, an Arabic segment must not overwrite the live German line,
-      // advance its `seq`/`rev` display, or enter the history. The English
-      // `src` below is the source text, so the two columns stay source+German.
-      if ((segment.language ?? "de") !== "de") return;
+      const target = liveLines.get(segment.language);
+      if (target === undefined) return;
 
-      deEl.textContent = segment.de || "–";
-      srcEl.textContent = segment.src || "(Quelle nicht verfügbar)";
+      target.textContent = segment.text || "–";
+      if (segment.src) srcEl.textContent = segment.src;
       seqEl.textContent = `${segment.seq}.${segment.rev} ${segment.state}`;
       renderEl.textContent = `${Math.round(performance.now() - receivedAt)} ms`;
 
       // Only committed lines enter the history; drafts would just flicker.
       if (segment.state === "final") {
-        history.unshift({ seq: segment.seq, de: segment.de, src: segment.src });
-        history.length = Math.min(history.length, MAX_HISTORY);
+        const entry = history.get(segment.seq) ?? { seq: segment.seq, src: null, lines: {} };
+        entry.lines[segment.language] = segment.text;
+        entry.src ??= segment.src;
+        history.set(segment.seq, entry);
+        for (const old of [...history.keys()].sort((a, b) => b - a).slice(MAX_HISTORY)) {
+          history.delete(old);
+        }
         renderHistory();
       }
     },
@@ -73,25 +100,25 @@ function makeAdminView() {
   };
 }
 
-async function sessionId() {
+async function loadSession() {
   const response = await fetch("/api/session");
   if (!response.ok) throw new Error(`no session: ${response.status}`);
-  return (await response.json()).id;
+  return response.json();
 }
 
 async function main() {
-  const view = makeAdminView();
-  let id;
+  let session;
 
   try {
-    id = await sessionId();
+    session = await loadSession();
   } catch (error) {
-    view.setStatus("stopped", String(error));
+    document.getElementById("stat-status").textContent = `stopped – ${error}`;
     return;
   }
 
+  const view = makeAdminView(session);
   const client = new ViewerClient({
-    sessionId: id,
+    sessionId: session.id,
     role: "admin",
     overlay: view,
     onError: (payload) => view.setStatus("delayed", `${payload.stage}: ${payload.message}`),
@@ -102,7 +129,7 @@ async function main() {
   // keeps the console honest about how many people are actually watching.
   window.setInterval(async () => {
     try {
-      const response = await fetch(`/api/session/${encodeURIComponent(id)}`);
+      const response = await fetch(`/api/session/${encodeURIComponent(session.id)}`);
       if (!response.ok) return;
       view.setViewers((await response.json()).viewers);
     } catch {

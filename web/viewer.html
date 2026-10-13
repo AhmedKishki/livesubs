@@ -1,9 +1,9 @@
 <!doctype html>
-<!-- The QR target. German by default: the English source is stripped on the
-     server before it ever reaches this device, and the default role receives
-     German only. An explicit `?lang=ar` opts into the Arabic viewer role, which
-     receives Arabic only (docs/07-delivery-qr.md). -->
-<html lang="de">
+<!-- The QR target. The page sets its own language and direction once it knows the
+     session: the default language of the session for a plain scan, or the one named by
+     `?lang=<code>` (docs/07-delivery-qr.md). The speaker's own words are stripped on the
+     server before they reach this device, and so is every language but the one chosen. -->
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta
@@ -12,12 +12,16 @@
     />
     <meta name="color-scheme" content="dark" />
     <meta name="robots" content="noindex" />
-    <title>Untertitel</title>
+    <title>Subtitles</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
     <noscript>
-      <p style="padding: 2rem">Für die Untertitel ist JavaScript erforderlich.</p>
+      <p style="padding: 2rem">
+        JavaScript is required for the subtitles. /
+        Für die Untertitel ist JavaScript erforderlich. /
+        يلزم تفعيل جافاسكربت لعرض الترجمة.
+      </p>
     </noscript>
     <script type="module" src="/static/viewer.js"></script>
   </body>

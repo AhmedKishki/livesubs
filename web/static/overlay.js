@@ -10,7 +10,7 @@
 // animation is needed. The protocol removes a whole class of visual problem.
 
 import { Action, decideSegment, holdMs, shouldRetire } from "./pacing.js";
-import { languageConfig, segmentText } from "./language.js";
+import { segmentText, stringsFor } from "./language.js";
 
 //: Matches --fade-out-ms in styles.css. Duplicated because the JS needs it to
 //: know when the outgoing layer may be cleared.
@@ -60,14 +60,16 @@ export function savePrefs(prefs) {
 }
 
 export class SubtitleOverlay {
-  constructor(root, { onAck, prefs = loadPrefs(), language = "de" } = {}) {
+  constructor(root, { language, dir = "ltr", onAck, prefs = loadPrefs() } = {}) {
     this.root = root;
     this.onAck = onAck ?? (() => {});
     this.prefs = prefs;
-    //: The one language this overlay renders. The default keeps every existing
-    //: caller German, and the page's URL decides the rest.
-    this.language = language;
-    this.config = languageConfig(language);
+    //: The one language this overlay renders, and which way it runs. The page decides
+    //: both from the session and the URL; an overlay never guesses, so one built without
+    //: a language renders nothing.
+    this.language = language ?? null;
+    this.dir = dir;
+    this.strings = stringsFor(this.language);
 
     this.current = null;
     this.dropped = 0;
@@ -94,11 +96,11 @@ export class SubtitleOverlay {
 
     const text = document.createElement("span");
     text.className = "subtitle-text";
-    // `lang="de"` is what enables German hyphenation. Without it, `hyphens:
-    // auto` silently does nothing and long compounds overflow the line. The
-    // Arabic view carries `lang="ar"` and `dir="rtl"` instead.
-    text.setAttribute("lang", this.config.htmlLang);
-    text.setAttribute("dir", this.config.dir);
+    // The language attribute is what enables hyphenation. Without it, `hyphens: auto`
+    // silently does nothing and long German compounds overflow the line. The direction
+    // makes a right-to-left language lay out from the right.
+    if (this.language !== null) text.setAttribute("lang", this.language);
+    text.setAttribute("dir", this.dir);
 
     box.append(text);
     layer.append(box);
@@ -135,10 +137,10 @@ export class SubtitleOverlay {
 
   /** Apply one segment from the wire, if the pacing policy says we may. */
   offer(segment, receivedAt = performance.now()) {
-    // The selected language's field, or nothing. A segment of the other language
-    // is ignored before pacing, so it can neither advance our `seq`/`rev` state
-    // nor count as a drop; the server already filters, and this is the second
-    // line of defence for a mixed feed.
+    // This overlay's language, or nothing. A segment of another language is ignored
+    // before pacing, so it can neither advance our `seq`/`rev` state nor count as a
+    // drop; the server already filters, and this is the second line of defence for a
+    // mixed feed.
     const text = segmentText(segment, this.language);
     if (text === null) return Action.IGNORE;
 
@@ -299,17 +301,22 @@ export class SubtitleOverlay {
 
   // --- status ---------------------------------------------------------------
 
+  /**
+   * Show how healthy the subtitles are. `status` is the wire's `live`, `delayed` or
+   * `stopped`, or `unavailable` for a language this session does not offer.
+   */
   setStatus(status, detail, pill) {
     const stalled = status !== "live";
-    this.root.classList.toggle("is-stalled", status === "stopped");
+    const stopped = status === "stopped" || status === "unavailable";
+    this.root.classList.toggle("is-stalled", stopped);
 
     if (!pill) return;
     // The viewer shows its own language's label and never the server's raw
     // detail, which is currently English. The operator console reads `detail`
     // directly instead, so an untranslated diagnostic stays visible there.
-    pill.textContent = stalled ? (this.config.status[status] ?? status) : "";
+    pill.textContent = stalled ? (this.strings.status[status] ?? status) : "";
     pill.classList.toggle("is-visible", stalled);
-    pill.classList.toggle("is-stopped", status === "stopped");
+    pill.classList.toggle("is-stopped", stopped);
   }
 
   // --- telemetry ------------------------------------------------------------

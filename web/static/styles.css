@@ -99,8 +99,8 @@ body {
 
   /* German compounds are the common case here, not the exception: "Schwingungs-
      dämpfung" is one word and "Resonanzfrequenz" is another. Breaking them is better
-     than pushing them past the edge. `lang="de"` on the text element is what makes
-     hyphenation apply at all - without that attribute this rule does nothing. */
+     than pushing them past the edge. The language attribute on the text element is what
+     makes hyphenation apply at all - without it this rule does nothing. */
   hyphens: auto;
   overflow-wrap: break-word;
 
@@ -252,8 +252,8 @@ body {
 }
 
 /* The language picker is the one native control in the panel. It keeps the
- * panel's dark surface and inherits the page direction, so the Arabic option
- * reads right-to-left without extra rules. */
+ * panel's dark surface and inherits the page direction, so a right-to-left page
+ * lays the picker out right-to-left without extra rules. */
 .controls-panel .language-select {
   width: 100%;
   padding: 0.3em 0.4em;
@@ -366,10 +366,18 @@ body {
   margin-bottom: 1.5rem;
 }
 
-.admin-de {
+.admin-line {
   font-size: clamp(1.1rem, 2.2vw, 1.6rem);
   font-weight: 600;
   margin: 0 0 0.4rem;
+}
+
+.admin-lang {
+  display: block;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  opacity: 0.55;
 }
 
 .admin-src {
@@ -389,7 +397,7 @@ body {
   padding: 0.5rem 0;
 }
 
-.admin-history .admin-de {
+.admin-history .admin-line {
   display: block;
   font-size: 1rem;
   font-weight: 500;
