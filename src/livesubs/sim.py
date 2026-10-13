@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from livesubs.events import (
     HelloMessage,
@@ -31,6 +31,7 @@ from livesubs.events import (
     Timing,
 )
 from livesubs.hub import Hub
+from livesubs.languages import MODES, Mode
 from livesubs.segmenter import hold_ms
 
 __all__ = ["SCRIPTS", "SimPublisher", "SimScript", "SimSegment", "replay"]
@@ -38,16 +39,29 @@ __all__ = ["SCRIPTS", "SimPublisher", "SimScript", "SimSegment", "replay"]
 
 @dataclass(slots=True)
 class SimSegment:
-    """One scripted subtitle line.
+    """One scripted line, in every language the simulation speaks.
 
-    ``de_draft`` is deliberately a different, worse translation than
-    ``de_final``: real drafts are revised, and the overlay must be designed for
-    that rather than for a clean append.
+    ``final`` is what each language's viewer ends up reading, and for the speaker's own
+    language it is what was said. ``draft`` is deliberately a different, worse translation:
+    real drafts are revised, and the overlay must be designed for that rather than for a
+    clean append. A language with no draft shows its final text straight away.
     """
 
-    src: str
-    de_draft: str
-    de_final: str
+    final: dict[str, str]
+    draft: dict[str, str] = field(default_factory=dict)
+
+    def draft_for(self, language: str) -> str:
+        return self.draft.get(language, self.final[language])
+
+
+def _line(
+    en: str, de: str, ar: str, *, en_draft: str = "", de_draft: str = "", ar_draft: str = ""
+) -> SimSegment:
+    drafts = {"en": en_draft, "de": de_draft, "ar": ar_draft}
+    return SimSegment(
+        final={"en": en, "de": de, "ar": ar},
+        draft={code: text for code, text in drafts.items() if text},
+    )
 
 
 @dataclass(slots=True)
@@ -67,47 +81,62 @@ class SimScript:
 #: Physics-lecture content, chosen because it exercises long German compounds
 #: and the hyphenation path in ``docs/06-overlay-spec.md``.
 _DEFAULT_SEGMENTS: list[SimSegment] = [
-        SimSegment(
-            src="Today we will look at damped oscillations.",
-            de_draft="Heute betrachten wir gedämpfte Schwingungen.",
-            de_final="Heute betrachten wir gedämpfte Schwingungen.",
-        ),
-        SimSegment(
-            src="The amplitude decreases exponentially over time.",
-            de_draft="Die Amplitude nimmt ab exponentiell mit der Zeit.",
-            de_final="Die Amplitude nimmt mit der Zeit exponentiell ab.",
-        ),
-        SimSegment(
-            src="The damping constant determines how quickly energy is lost.",
-            de_draft="Die Dämpfungskonstante bestimmt, wie Energie schnell verloren geht.",
-            de_final="Die Dämpfungskonstante bestimmt, wie schnell Energie verloren geht.",
-        ),
-        SimSegment(
-            src="Write this down, because it will appear on the exam.",
-            de_draft="Schreiben Sie das auf, weil es in der Prüfung erscheinen wird.",
-            de_final="Notieren Sie das, denn es wird in der Prüfung vorkommen.",
-        ),
-        SimSegment(
-            src="Consider a mass on a spring in a viscous medium.",
-            de_draft="Betrachten Sie eine Masse an einer Feder in einem viskosen Medium.",
-            de_final="Betrachten Sie eine Masse an einer Feder in einem viskosen Medium.",
-        ),
-        SimSegment(
-            src="The resonance frequency shifts slightly.",
-            de_draft="Die Resonanzfrequenz verschiebt sich leicht.",
-            de_final="Die Resonanzfrequenz verschiebt sich geringfügig.",
-        ),
+    _line(
+        en="Today we will look at damped oscillations.",
+        de="Heute betrachten wir gedämpfte Schwingungen.",
+        ar="اليوم سنتناول التذبذبات المخمّدة.",
+    ),
+    _line(
+        en="The amplitude decreases exponentially over time.",
+        de="Die Amplitude nimmt mit der Zeit exponentiell ab.",
+        ar="تتناقص السعة أسّياً مع مرور الوقت.",
+        en_draft="The amplitude falls off exponential with the time.",
+        de_draft="Die Amplitude nimmt ab exponentiell mit der Zeit.",
+        ar_draft="تتناقص السعة مع مرور الوقت بشكل أسّي.",
+    ),
+    _line(
+        en="The damping constant determines how quickly energy is lost.",
+        de="Die Dämpfungskonstante bestimmt, wie schnell Energie verloren geht.",
+        ar="يحدد ثابت التخميد مدى سرعة فقدان الطاقة.",
+        en_draft="The damping constant determines, how energy quickly lost goes.",
+        de_draft="Die Dämpfungskonstante bestimmt, wie Energie schnell verloren geht.",
+        ar_draft="ثابت التخميد يحدد كم بسرعة الطاقة تُفقد.",
+    ),
+    _line(
+        en="Write this down, because it will appear on the exam.",
+        de="Notieren Sie das, denn es wird in der Prüfung vorkommen.",
+        ar="دوّنوا هذا، لأنه سيأتي في الامتحان.",
+        en_draft="Write that on, because it in the exam appear will.",
+        de_draft="Schreiben Sie das auf, weil es in der Prüfung erscheinen wird.",
+        ar_draft="اكتبوا هذا لأنه سيظهر في الامتحان.",
+    ),
+    _line(
+        en="Consider a mass on a spring in a viscous medium.",
+        de="Betrachten Sie eine Masse an einer Feder in einem viskosen Medium.",
+        ar="تأمّلوا كتلة معلّقة بنابض في وسط لزج.",
+    ),
+    _line(
+        en="The resonance frequency shifts slightly.",
+        de="Die Resonanzfrequenz verschiebt sich geringfügig.",
+        ar="يتغير تردد الرنين بشكل طفيف.",
+        en_draft="The resonance frequency moves a little.",
+        de_draft="Die Resonanzfrequenz verschiebt sich leicht.",
+        ar_draft="ينزاح تردد الرنين قليلاً.",
+    ),
 ]
 
 #: Short lines at a 700 ms cadence. Deliberately far faster than a comfortable
-#: reading time for the German, so this is the only script that genuinely
+#: reading time for the translation, so this is the only script that genuinely
 #: exercises the display catch-up rule - without it that rule would be dead code
 #: and would rot. Cadence lives on the script for exactly this reason.
 _FAST_SEGMENTS: list[SimSegment] = [
-    SimSegment(
-        src=f"Point {n}: this follows immediately and matters for the exam.",
+    _line(
+        en=f"Point {n}: this follows immediately and matters for the exam.",
+        de=f"Punkt {n}, dies folgt unmittelbar und ist prüfungsrelevant.",
+        ar=f"النقطة {n}: هذا يلي مباشرة ومهم للامتحان.",
+        en_draft=f"Point {n}.",
         de_draft=f"Punkt {n}.",
-        de_final=f"Punkt {n}, dies folgt unmittelbar und ist prüfungsrelevant.",
+        ar_draft=f"النقطة {n}.",
     )
     for n in range(1, 12)
 ]
@@ -121,9 +150,11 @@ SCRIPTS: dict[str, SimScript] = {
     "lengthy": SimScript(
         segments=[
             SimSegment(
-                src=f"({cycle}) {segment.src}",
-                de_draft=segment.de_draft,
-                de_final=segment.de_final,
+                final={
+                    code: f"({cycle}) {text}" if code == "en" else text
+                    for code, text in segment.final.items()
+                },
+                draft=dict(segment.draft),
             )
             for cycle in range(1, 4)
             for segment in _DEFAULT_SEGMENTS
@@ -136,6 +167,7 @@ SCRIPTS: dict[str, SimScript] = {
 async def replay(
     script: str = "default",
     *,
+    mode: Mode | None = None,
     session_id: str = "sim",
     speed: float = 1.0,
     stop: asyncio.Event | None = None,
@@ -159,8 +191,12 @@ async def replay(
     finished". A demonstration that has to be caught in a twelve-second window is not a
     demonstration. ``loop=False`` stays the default so tests and ``--replay`` get the
     finite, inspectable sequence they depend on.
+
+    ``mode`` says who is speaking and which languages listeners read: the speaker's lines
+    are the source, and every target gets its own stream. Without one, an English speaker.
     """
 
+    mode = mode or MODES["en"]
     if script not in SCRIPTS:
         raise KeyError(f"unknown script {script!r}; available: {sorted(SCRIPTS)}")
 
@@ -170,7 +206,12 @@ async def replay(
 
     await _sleep(cadence * 0.3, speed, stop)
     yield HelloMessage(
-        data=HelloPayload(session_id=session_id, session_name=f"sim:{script}")
+        data=HelloPayload(
+            session_id=session_id,
+            session_name=f"sim:{script}",
+            source=mode.source,
+            targets=list(mode.targets),
+        )
     )
     yield StatusMessage(data=StatusPayload(status="live"))
 
@@ -182,36 +223,24 @@ async def replay(
     while True:
         for offset, seg in enumerate(segments):
             seq = completed + offset
+            src = seg.final[mode.source]
 
             # Draft first: this is the state the attendee sees while MT is still
             # streaming, and the state the overlay must make look provisional.
-            yield SegmentMessage(
-                data=SubtitleSegment(
-                    seq=seq,
-                    rev=0,
-                    state=SegmentState.DRAFT,
-                    de=seg.de_draft,
-                    src=seg.src,
-                    timing=Timing(audio_ms=seq * cadence, emit_ms=seq * cadence + 400),
-                )
-            )
+            for target in mode.targets:
+                yield _segment(seq, 0, SegmentState.DRAFT, target, seg.draft_for(target), src,
+                               audio_ms=seq * cadence, emit_ms=seq * cadence + 400)
 
             # A revision that rewrites the clause, then commits. The pause before it
             # is scaled to a plausible MT latency so the pacing behaves realistically.
             await _sleep(600, speed, stop)
-            yield SegmentMessage(
-                data=SubtitleSegment(
-                    seq=seq,
-                    rev=1,
-                    state=SegmentState.FINAL,
-                    de=seg.de_final,
-                    src=seg.src,
-                    timing=Timing(audio_ms=seq * cadence, emit_ms=seq * cadence + 900),
-                )
-            )
+            for target in mode.targets:
+                yield _segment(seq, 1, SegmentState.FINAL, target, seg.final[target], src,
+                               audio_ms=seq * cadence, emit_ms=seq * cadence + 900)
 
-            # Pace the next segment against this line's reading-time hold.
-            await _sleep(max(cadence, hold_ms(len(seg.de_final))), speed, stop)
+            # Pace the next segment against the longest line's reading-time hold.
+            longest = max(len(seg.final[target]) for target in mode.targets)
+            await _sleep(max(cadence, hold_ms(longest)), speed, stop)
 
         completed += len(segments)
 
@@ -220,6 +249,23 @@ async def replay(
                 data=StatusPayload(status="stopped", detail="simulation ended")
             )
             return
+
+
+def _segment(
+    seq: int, rev: int, state: SegmentState, language: str, text: str, src: str,
+    *, audio_ms: int, emit_ms: int,
+) -> SegmentMessage:
+    return SegmentMessage(
+        data=SubtitleSegment(
+            seq=seq,
+            rev=rev,
+            state=state,
+            language=language,
+            text=text,
+            src=src,
+            timing=Timing(audio_ms=audio_ms, emit_ms=emit_ms),
+        )
+    )
 
 
 class _Stopped(Exception):
@@ -267,16 +313,28 @@ class SimPublisher:
     speed: float = 1.0
     #: Serving sets this; see :func:`replay` for why a demonstration must not expire.
     loop: bool = False
+    #: Who is speaking and which languages listeners read.
+    mode: Mode = MODES["en"]
+
+    @property
+    def supported_languages(self) -> tuple[str, ...]:
+        return self.mode.targets
 
     async def run(self, hub: Hub, *, session_id: str, stop: asyncio.Event) -> None:
         try:
             async for message in replay(
                 self.script,
+                mode=self.mode,
                 session_id=session_id,
                 speed=self.speed,
                 stop=stop,
                 loop=self.loop,
             ):
+                # A session announces itself before it starts, under the name it was
+                # configured with. The replay's own hello would replace that with the
+                # script's name, so it is used only on a hub nobody has announced on.
+                if isinstance(message, HelloMessage) and hub.latest_hello is not None:
+                    continue
                 hub.publish(message)
         except _Stopped:
             return

@@ -8,7 +8,7 @@ needs a regression net that does not depend on any vendor being reachable.
 The properties asserted here are the ones the overlay's correctness rests on, so
 they are invariants rather than examples: monotonic ``seq``, ``rev`` restarting at
 zero per sequence, no ``final`` ever followed by a ``draft``, and viewers never
-receiving the English source.
+receiving the speaker's own words.
 """
 
 from __future__ import annotations
@@ -19,185 +19,144 @@ from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock
 
 import pytest
+from support import (
+    PHRASES,
+    FlakyMt,
+    RecordingHub,
+    RecordingMt,
+    make_pipeline,
+    run_to_completion,
+    wait_until,
+)
 
 from livesubs.asr.stub import StubAsr
 from livesubs.audio.calibration import CalibrationError, CalibrationNotice
 from livesubs.audio.synthetic import SpeechLikeSource
-from livesubs.events import (
-    ErrorMessage,
-    SegmentMessage,
-    StatusMessage,
-    SubtitleSegment,
-    WireMessage,
-)
+from livesubs.events import SegmentMessage, StatusMessage
 from livesubs.hub import ClientRole, Hub, SegmentPublisher
 from livesubs.ingest import FrameStats
-from livesubs.mt.base import MtChunk, MtContext, MtProvider
+from livesubs.mt.base import MtChunk, MtContext
 from livesubs.mt.passthrough import MARKER, PassthroughMt
 from livesubs.pipeline import Committed, LivePipeline, PipelineConfig
+from livesubs.pipeline.health import Health
+from livesubs.pipeline.targets import WorkerEnv
 
-PHRASES = (
-    "alpha beta gamma delta epsilon",
-    "zeta eta theta iota kappa lambda",
-)
-
-
-async def test_failed_calibration_prevents_provider_calls(monkeypatch):
-    pipeline = make_pipeline(duration_ms=40)
-    pipeline.source.prepare = AsyncMock(side_effect=CalibrationError("cannot verify gain"))
-    pipeline.source.close = AsyncMock()
-    pipeline.mt.warm = AsyncMock()
-    pipeline.asr.open = AsyncMock()
-    with pytest.raises(CalibrationError):
-        await run_to_completion(pipeline)
-    pipeline.source.close.assert_awaited_once()
-    pipeline.mt.warm.assert_not_awaited()
-    pipeline.asr.open.assert_not_awaited()
+DE = ClientRole.viewer("de")
+AR = ClientRole.viewer("ar")
 
 
-async def test_stop_during_calibration_closes_source_without_opening_providers():
-    pipeline = make_pipeline(duration_ms=40)
-    entered, released, stop = asyncio.Event(), asyncio.Event(), asyncio.Event()
-
-    async def prepare():
-        entered.set()
-        await released.wait()
-
-    async def close():
-        released.set()
-
-    pipeline.source.prepare = prepare
-    pipeline.source.close = AsyncMock(side_effect=close)
-    pipeline.mt.warm = AsyncMock()
-    pipeline.asr.open = AsyncMock()
-    task = asyncio.create_task(pipeline.run(RecordingHub(), session_id="test", stop=stop))
-    await asyncio.wait_for(entered.wait(), 1)
-    stop.set()
-    await asyncio.wait_for(task, 1)
-    pipeline.source.close.assert_awaited()
-    pipeline.mt.warm.assert_not_awaited()
-    pipeline.asr.open.assert_not_awaited()
-
-
-def test_calibration_notices_are_visible_and_do_not_clear_translation_lag():
-    pipeline = make_pipeline(duration_ms=40)
-    hub = RecordingHub()
-    pipeline._hub = hub
-    pipeline._capture_calibration(CalibrationNotice("adjusting", "verifying microphone"))
-    assert hub.statuses[-1] == "delayed"
-    assert "verifying microphone" in hub.messages[-1].data.detail
-    pipeline._lagging = True
-    pipeline._capture_calibration(CalibrationNotice("ready", "capture verified"))
-    assert hub.statuses[-1] == "delayed"
-    pipeline._lagging = False
-    pipeline._capture_calibration(CalibrationNotice("ready", "capture verified"))
-    assert hub.statuses[-1] == "live"
-
-
-def test_failed_calibration_notice_reports_capture_stage():
-    pipeline = make_pipeline(duration_ms=40)
-    hub = RecordingHub()
-    pipeline._hub = hub
-    pipeline._capture_calibration(CalibrationNotice("failed", "gain ineffective"))
-    errors = [m for m in hub.messages if isinstance(m, ErrorMessage)]
-    assert errors[-1].data.stage.value == "capture"
-
-
-def test_degraded_gain_protection_tells_the_operator_without_delaying_viewers():
-    """The extra gave up and capture goes on: an error for the console, no delayed pill."""
-
-    pipeline = make_pipeline(duration_ms=40)
-    hub = RecordingHub()
-    pipeline._hub = hub
-    pipeline._capture_calibration(CalibrationNotice("adjusting", "reducing gain"))
-    pipeline._capture_calibration(CalibrationNotice("degraded", "no supported gain control"))
-
-    errors = [m for m in hub.messages if isinstance(m, ErrorMessage)]
-    assert errors[-1].data.stage.value == "capture"
-    assert hub.statuses[-1] == "live"
-
-
-class RecordingHub(Hub):
-    """A hub that keeps every published message.
-
-    A mailbox deliberately does not: it is latest-wins per channel, which is the
-    right design for delivery and the wrong place to observe a sequence from.
-    Recording at the hub also means the tests exercise the real ``Hub.publish``,
-    its encoding cache and its ordering guard.
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.messages: list[WireMessage] = []
-
-    def publish(self, message: WireMessage) -> None:
-        self.messages.append(message)
-        super().publish(message)
-
-    @property
-    def segments(self) -> list[SubtitleSegment]:
-        return [m.data for m in self.messages if isinstance(m, SegmentMessage)]
-
-    @property
-    def statuses(self) -> list[str]:
-        return [m.data.status.value for m in self.messages if isinstance(m, StatusMessage)]
-
-class RecordingMt(PassthroughMt):
-    """A translator that remembers what context it was given."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.contexts: list[MtContext] = []
-        self.sources: list[str] = []
-
-    async def translate(self, src: str, ctx: MtContext) -> AsyncIterator[MtChunk]:
-        self.sources.append(src)
-        self.contexts.append(ctx)
-        async for chunk in super().translate(src, ctx):
-            yield chunk
-
-
-class FlakyMt(PassthroughMt):
-    """Fails its first ``failures`` calls, then behaves."""
-
-    def __init__(self, failures: int = 1) -> None:
-        super().__init__()
-        self.remaining = failures
-
-    async def translate(self, src: str, ctx: MtContext) -> AsyncIterator[MtChunk]:
-        if self.remaining > 0:
-            self.remaining -= 1
-            raise RuntimeError("provider is down")
-        async for chunk in super().translate(src, ctx):
-            yield chunk
-
-
-def make_pipeline(
-    *,
-    duration_ms: int = 8000,
-    mt: MtProvider | None = None,
-    realtime: bool = False,
-) -> LivePipeline:
+def pipeline_over(source, *, asr=None, mt=None) -> LivePipeline:
     return LivePipeline(
-        source=SpeechLikeSource(
-            realtime=realtime,
-            duration_ms=None if realtime else duration_ms,
-        ),
-        asr=StubAsr(phrases=PHRASES),
-        mt=mt if mt is not None else PassthroughMt(),
+        source=source,
+        asr=asr or StubAsr(phrases=PHRASES),
+        translators={"de": mt or PassthroughMt()},
         config=PipelineConfig(telemetry_interval_ms=1000),
     )
 
 
-async def run_to_completion(
-    pipeline: LivePipeline,
-    hub: RecordingHub | None = None,
-) -> RecordingHub:
-    """Drive a pipeline to the end of its audio and return what it published."""
+def armed(pipeline: LivePipeline, hub: RecordingHub) -> None:
+    """Give a pipeline that is not running the parts a status report needs."""
 
-    hub = hub if hub is not None else RecordingHub()
-    await pipeline.run(hub, session_id="test", stop=asyncio.Event())
-    return hub
+    pipeline._hub = hub
+    pipeline._health = Health(pipeline._publish_health)
+
+
+async def test_failed_calibration_prevents_provider_calls() -> None:
+    source = SpeechLikeSource(realtime=False, duration_ms=40)
+    source.prepare = AsyncMock(side_effect=CalibrationError("cannot verify gain"))  # type: ignore[attr-defined]
+    source.close = AsyncMock()  # type: ignore[method-assign]
+    mt, asr = PassthroughMt(), StubAsr()
+    mt.warm = AsyncMock()  # type: ignore[method-assign]
+    asr.open = AsyncMock()  # type: ignore[method-assign]
+
+    with pytest.raises(CalibrationError):
+        await run_to_completion(pipeline_over(source, asr=asr, mt=mt))
+
+    source.close.assert_awaited_once()
+    mt.warm.assert_not_awaited()
+    asr.open.assert_not_awaited()
+
+
+async def test_stop_during_calibration_closes_source_without_opening_providers() -> None:
+    entered, released, stop = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    source = SpeechLikeSource(realtime=False, duration_ms=40)
+
+    async def prepare() -> None:
+        entered.set()
+        await released.wait()
+
+    async def close() -> None:
+        released.set()
+
+    source.prepare = prepare  # type: ignore[attr-defined]
+    source.close = AsyncMock(side_effect=close)  # type: ignore[method-assign]
+    mt, asr = PassthroughMt(), StubAsr()
+    mt.warm = AsyncMock()  # type: ignore[method-assign]
+    asr.open = AsyncMock()  # type: ignore[method-assign]
+
+    task = asyncio.create_task(
+        pipeline_over(source, asr=asr, mt=mt).run(RecordingHub(), session_id="test", stop=stop)
+    )
+    await asyncio.wait_for(entered.wait(), 1)
+    stop.set()
+    await asyncio.wait_for(task, 1)
+
+    source.close.assert_awaited()
+    mt.warm.assert_not_awaited()
+    asr.open.assert_not_awaited()
+
+
+async def merged_status(hub: RecordingHub, role: ClientRole):
+    """What a viewer of ``role`` is told, after everything published so far."""
+
+    subscriber = hub.subscribe(role)
+    messages = await asyncio.wait_for(subscriber.mailbox.receive(), timeout=1.0)
+    return next((m.data for m in messages if isinstance(m, StatusMessage)), None)
+
+
+async def test_calibration_notices_are_visible_and_do_not_clear_translation_lag() -> None:
+    pipeline = make_pipeline(duration_ms=40)
+    hub = RecordingHub(("de",))
+    armed(pipeline, hub)
+
+    pipeline._capture_calibration(CalibrationNotice("adjusting", "verifying microphone"))
+    status = await merged_status(hub, DE)
+    assert status.status.value == "delayed"
+    assert "verifying microphone" in status.detail
+
+    # The German translator falls behind while the microphone is being checked.
+    pipeline._health.problem("lag", "translation is behind", scope="de")
+    pipeline._capture_calibration(CalibrationNotice("ready", "capture verified"))
+    assert (await merged_status(hub, DE)).status.value == "delayed"
+
+    pipeline._health.clear("lag", scope="de")
+    assert (await merged_status(hub, DE)).status.value == "live"
+
+
+def test_failed_calibration_notice_reports_capture_stage() -> None:
+    pipeline = make_pipeline(duration_ms=40)
+    hub = RecordingHub()
+    armed(pipeline, hub)
+
+    pipeline._capture_calibration(CalibrationNotice("failed", "gain ineffective"))
+
+    assert hub.errors[-1].data.stage.value == "capture"
+    assert hub.statuses[-1] == "delayed"
+
+
+def test_degraded_gain_protection_tells_the_operator_without_delaying_viewers() -> None:
+    """The extra gave up and capture goes on: an error for the console, no delayed pill."""
+
+    pipeline = make_pipeline(duration_ms=40)
+    hub = RecordingHub()
+    armed(pipeline, hub)
+
+    pipeline._capture_calibration(CalibrationNotice("adjusting", "reducing gain"))
+    pipeline._capture_calibration(CalibrationNotice("degraded", "no supported gain control"))
+
+    assert hub.errors[-1].data.stage.value == "capture"
+    assert hub.statuses[-1] == "live"
+
 
 # --- the shape of a healthy run -------------------------------------------------
 
@@ -207,11 +166,12 @@ async def test_speech_bursts_become_translated_finals() -> None:
 
     finals = [s for s in hub.segments if s.state == "final"]
     assert finals, "no final segment was published"
-    assert all(s.de.startswith(MARKER) for s in finals)
+    assert all(s.text.startswith(MARKER) for s in finals)
+    assert {s.language for s in finals} == {"de"}
 
 
-async def test_the_english_source_rides_alongside_the_german() -> None:
-    """The operator console needs it, to diagnose a mistranslation."""
+async def test_the_speakers_words_ride_alongside_the_translation() -> None:
+    """The operator console needs them, to diagnose a mistranslation."""
 
     hub = await run_to_completion(make_pipeline())
 
@@ -243,20 +203,44 @@ async def test_timing_carries_two_independent_clocks() -> None:
     assert all(s.timing.emit_ms < s.timing.audio_ms for s in finals)
 
 
-async def test_no_published_subtitle_text_is_ever_the_english_source() -> None:
+async def test_latency_is_measured_from_the_first_frame_not_from_calibration() -> None:
+    """Calibration can take many seconds and must not be counted as lag."""
+
+    source = SpeechLikeSource(realtime=True)
+
+    async def prepare() -> None:
+        await asyncio.sleep(0.4)
+
+    source.prepare = prepare  # type: ignore[attr-defined]
+    stop = asyncio.Event()
+    hub = RecordingHub()
+    task = asyncio.create_task(pipeline_over(source).run(hub, session_id="t", stop=stop))
+    try:
+        while not [s for s in hub.segments if s.state == "final"]:
+            await asyncio.sleep(0.05)
+        first = next(s for s in hub.segments if s.state == "final")
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, timeout=5)
+
+    lag = first.timing.emit_ms - first.timing.audio_ms
+    assert lag < 400, f"{lag} ms includes the calibration that came first"
+
+
+async def test_no_published_subtitle_text_is_ever_the_speakers_own() -> None:
     """Regression test for the most dangerous shortcut available here.
 
-    Echoing the ASR partial straight into ``de`` would make text appear sooner, and
-    it would put English on a German-only overlay. Unless the translator has run,
-    there is nothing German to publish, so nothing is published.
+    Echoing the recogniser's partial straight into a subtitle would make text appear
+    sooner, and it would put the speaker's language on a screen meant for another. Unless
+    the translator has run, there is nothing to publish, so nothing is published.
     """
 
     hub = await run_to_completion(make_pipeline())
 
     assert hub.segments
     for segment in hub.segments:
-        assert segment.de.startswith(MARKER), (
-            f"seq {segment.seq} rev {segment.rev} published untranslated text: {segment.de!r}"
+        assert segment.text.startswith(MARKER), (
+            f"seq {segment.seq} rev {segment.rev} published untranslated text: {segment.text!r}"
         )
 
 
@@ -322,6 +306,7 @@ async def test_seqs_are_contiguous_from_zero() -> None:
 
     assert seqs == list(range(len(seqs)))
 
+
 # --- pacing and throttling ------------------------------------------------------
 
 
@@ -359,7 +344,7 @@ async def test_the_audio_path_is_the_clock_not_wall_time() -> None:
 
 
 async def test_translation_context_carries_forward() -> None:
-    """German is verb-final, so an isolated English fragment translates badly.
+    """A verb-final language is badly served by an isolated fragment.
 
     Context must arrive in the user message, never the system prompt, because the
     provider's cache only hits on a stable prefix.
@@ -371,7 +356,7 @@ async def test_translation_context_carries_forward() -> None:
     assert len(mt.contexts) >= 2
     assert mt.contexts[0].source_context == []
     assert mt.contexts[1].source_context == [mt.sources[0]]
-    assert mt.contexts[1].target_context  # the previous German output
+    assert mt.contexts[1].target_context  # the previous translation
 
 
 async def test_a_failing_translation_does_not_end_the_lecture() -> None:
@@ -379,12 +364,7 @@ async def test_a_failing_translation_does_not_end_the_lecture() -> None:
 
     hub = await run_to_completion(make_pipeline(mt=FlakyMt(failures=2)))
 
-    errors = [
-        m.data
-        for m in hub.messages
-        if isinstance(m, ErrorMessage) and m.data.stage == "mt"
-    ]
-    assert errors
+    assert [e for e in hub.errors if e.data.stage == "mt"]
     assert any(s.state == "final" for s in hub.segments)
     assert 0 not in {s.seq for s in hub.segments}, "the segment that failed twice is dropped"
 
@@ -394,7 +374,7 @@ async def test_a_quick_failure_is_retried_once_before_the_segment_is_given_up() 
 
     hub = await run_to_completion(make_pipeline(mt=FlakyMt(failures=1)))
 
-    assert not [m for m in hub.messages if isinstance(m, ErrorMessage)]
+    assert not hub.errors
     assert any(s.seq == 0 and s.state == "final" for s in hub.segments)
 
 
@@ -414,18 +394,17 @@ async def test_a_translation_that_dies_part_way_is_never_shown_as_complete() -> 
 
     mt = DiesOnce()
     committed: list[Committed] = []
-    pipeline = make_pipeline(mt=mt)
-    pipeline.on_segment = committed.append
+    pipeline = make_pipeline(mt=mt, on_segment=committed.append)
 
     hub = await run_to_completion(pipeline)
 
     first = [s for s in hub.segments if s.seq == 0]
     assert first[-1].state == "final", "a line that stops must still finish, or it hangs for ever"
-    assert first[-1].de.endswith("\u2026"), "and it says it was cut short"
+    assert first[-1].text.endswith("…"), "and it says it was cut short"
     assert 0 not in {c.seq for c in committed}, "a cut-off line is not a translation to record"
-    later = [ctx for ctx in mt.contexts[2:]]
+    later = mt.contexts[2:]
     assert later and all("Die Schwingung" not in " ".join(c.target_context) for c in later)
-    assert any(isinstance(m, ErrorMessage) and m.data.stage == "mt" for m in hub.messages)
+    assert any(e.data.stage == "mt" for e in hub.errors)
 
 
 async def test_a_translation_past_its_deadline_is_abandoned_and_not_retried() -> None:
@@ -447,7 +426,7 @@ async def test_a_translation_past_its_deadline_is_abandoned_and_not_retried() ->
 
     assert mt.calls and set(mt.calls.values()) == {1}, "a timeout is never retried"
     assert not [s for s in hub.segments if s.state == "final"]
-    assert any(isinstance(m, ErrorMessage) and m.data.stage == "mt" for m in hub.messages)
+    assert any(e.data.stage == "mt" for e in hub.errors)
 
 
 async def test_drafts_are_spaced_but_the_first_words_and_the_final_always_go_out() -> None:
@@ -464,20 +443,68 @@ async def test_drafts_are_spaced_but_the_first_words_and_the_final_always_go_out
 
     first = [s for s in hub.segments if s.seq == 0]
     assert [s.state.value for s in first] == ["draft", "final"]
-    assert first[0].de == "w0 ", "the first words are published at once"
-    assert first[-1].de.startswith("w0 w1 ") and first[-1].de.rstrip().endswith("w39")
+    assert first[0].text == "w0 ", "the first words are published at once"
+    assert first[-1].text.startswith("w0 w1 ") and first[-1].text.rstrip().endswith("w39")
 
 
 def test_a_translator_that_cannot_keep_up_loses_the_oldest_segments_not_the_newest() -> None:
     pipeline = make_pipeline(duration_ms=40)
     pipeline.config.max_backlog = 3
-    pipeline._de.active = True
+    hub = RecordingHub(("de",))
+    armed(pipeline, hub)
+    worker = pipeline._workers["de"]
+    worker.bind(
+        WorkerEnv(
+            hub=hub, config=pipeline.config, health=pipeline._health,
+            now_ms=lambda: 0, sink=None, gated=False,
+        ),
+        None,
+    )
+    worker.active = True
 
     for seq in range(10):
         pipeline._dispatch((seq, f"line {seq}", seq * 1000, seq * 1000 + 900))
 
-    assert [item[0] for item in pipeline._de.queue] == [7, 8, 9]
-    assert pipeline._de.shed == 7
+    assert [item[0] for item in worker.queue] == [7, 8, 9]
+    assert worker.shed == 7
+
+
+# --- the readers of a language are told when it falls behind -----------------------------
+
+
+async def test_a_translator_that_is_behind_tells_only_its_own_readers() -> None:
+    class SlowArabic(PassthroughMt):
+        async def translate(self, src: str, ctx: MtContext) -> AsyncIterator[MtChunk]:
+            await asyncio.sleep(6.0)  # far slower than the speaker, who makes a segment in ~2 s
+            async for chunk in super().translate(src, ctx):
+                yield chunk
+
+    pipeline = make_pipeline(translators={"de": PassthroughMt(), "ar": SlowArabic()})
+    pipeline.config.lag_queue_limit = 2
+    pipeline.source = SpeechLikeSource(realtime=True, duration_ms=9000)
+    hub = RecordingHub(("de", "ar"))
+    stop = asyncio.Event()
+    task = asyncio.create_task(pipeline.run(hub, session_id="t", stop=stop))
+    try:
+        await wait_until(
+            lambda: any(lang == "ar" and status == "delayed" for status, _, lang in hub.status_events),
+            timeout=8,
+        )
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, timeout=10)
+
+    delayed = {lang for status, _, lang in hub.status_events if status == "delayed"}
+    assert delayed == {"ar"}, "German was never behind, so its readers hear nothing"
+
+
+async def test_a_translator_that_keeps_failing_tells_its_readers_and_recovers() -> None:
+    mt = FlakyMt(failures=6)  # three segments, each tried twice
+    hub = await run_to_completion(make_pipeline(mt=mt, duration_ms=12000))
+
+    events = hub.status_events
+    assert ("delayed", "translation unavailable", "de") in events
+    assert events[-1][0] == "live" and events[-1][2] == "de", "and it says so when it recovers"
 
 
 # --- shutdown -------------------------------------------------------------------
@@ -488,7 +515,7 @@ async def test_the_utterance_open_when_the_audio_stops_is_still_committed() -> N
 
     1000 ms is deliberately shorter than ``max_segment_ms``, so the segmenter never
     gets a chance to emit. Everything here therefore depends on the shutdown flush,
-    which is also why the provider is closed before the publisher is drained.
+    which is also why the provider is closed before the workers are drained.
     """
 
     hub = await run_to_completion(make_pipeline(duration_ms=1000))
@@ -509,7 +536,7 @@ async def test_stop_ends_the_run_promptly_and_releases_capture() -> None:
     await asyncio.wait_for(pipeline.run(hub, session_id="test", stop=stop), timeout=5.0)
 
     assert pipeline.source.alive is False
-    assert pipeline.asr.healthy is False
+    assert pipeline._asr.healthy is False
 
 
 # --- telemetry ------------------------------------------------------------------
@@ -545,15 +572,15 @@ async def test_a_broken_stats_callback_cannot_stop_the_lecture() -> None:
     assert hub.segments
 
 
-# --- the German-only requirement ------------------------------------------------
+# --- what a viewer may see -------------------------------------------------------
 
 
-async def test_viewers_never_receive_the_english_source() -> None:
+async def test_viewers_never_receive_the_speakers_own_words() -> None:
     """Enforced on the server, never trusted to the viewer page."""
 
-    hub = RecordingHub()
-    viewer = hub.subscribe(ClientRole.VIEWER)
-    admin = hub.subscribe(ClientRole.ADMIN)
+    hub = RecordingHub(("de",))
+    viewer = hub.subscribe(DE)
+    admin = hub.subscribe(ClientRole.admin())
 
     pipeline = make_pipeline()
     await pipeline.run(hub, session_id="test", stop=asyncio.Event())
@@ -568,7 +595,7 @@ async def test_viewers_never_receive_the_english_source() -> None:
 
     assert admin_segments and admin_segments[-1].src
     assert viewer_segments and viewer_segments[-1].src is None
-    assert viewer_segments[-1].de
+    assert viewer_segments[-1].text
 
 
 async def test_the_pipeline_satisfies_the_publisher_protocol() -> None:
@@ -576,14 +603,32 @@ async def test_the_pipeline_satisfies_the_publisher_protocol() -> None:
 
     assert isinstance(make_pipeline(), SegmentPublisher)
 
+
+def test_the_pipeline_declares_the_languages_it_can_produce() -> None:
+    both = make_pipeline(translators={"de": PassthroughMt(), "ar": PassthroughMt})
+    assert both.supported_languages == ("de", "ar")
+    assert make_pipeline().supported_languages == ("de",)
+
+
+def test_a_pipeline_needs_a_translator_and_cannot_translate_into_the_speakers_language() -> None:
+    with pytest.raises(ValueError, match="at least one"):
+        LivePipeline(source=SpeechLikeSource(), asr=StubAsr(), translators={})
+    with pytest.raises(ValueError, match="speaker's language"):
+        LivePipeline(
+            source=SpeechLikeSource(),
+            asr=StubAsr(),
+            translators={"en": PassthroughMt()},
+            source_language="en",
+        )
+
+
 # --- committed segments, which become transcripts ---------------------------------
 
 
 async def test_every_final_is_reported_to_the_segment_sink() -> None:
     seen: list[Committed] = []
 
-    pipeline = make_pipeline()
-    pipeline.on_segment = seen.append
+    pipeline = make_pipeline(on_segment=seen.append)
     hub = await run_to_completion(pipeline)
 
     finals = [s for s in hub.segments if s.state == "final"]
@@ -596,15 +641,14 @@ async def test_committed_segments_carry_both_texts_and_a_usable_span() -> None:
 
     seen: list[Committed] = []
 
-    pipeline = make_pipeline()
-    pipeline.on_segment = seen.append
-    await run_to_completion(pipeline)
+    await run_to_completion(make_pipeline(on_segment=seen.append))
 
     assert seen
     for committed in seen:
         assert committed.start_ms < committed.end_ms
         assert committed.src in PHRASES
-        assert committed.de.startswith(MARKER)
+        assert committed.text.startswith(MARKER)
+        assert committed.language == "de"
 
 
 async def test_committed_spans_stay_inside_the_audio_that_was_played() -> None:
@@ -612,9 +656,7 @@ async def test_committed_spans_stay_inside_the_audio_that_was_played() -> None:
 
     seen: list[Committed] = []
 
-    pipeline = make_pipeline(duration_ms=4000)
-    pipeline.on_segment = seen.append
-    await run_to_completion(pipeline)
+    await run_to_completion(make_pipeline(duration_ms=4000, on_segment=seen.append))
 
     assert seen
     assert all(0 <= committed.start_ms for committed in seen)
@@ -626,9 +668,7 @@ async def test_committed_spans_are_ordered_and_do_not_overlap() -> None:
 
     seen: list[Committed] = []
 
-    pipeline = make_pipeline()
-    pipeline.on_segment = seen.append
-    await run_to_completion(pipeline)
+    await run_to_completion(make_pipeline(on_segment=seen.append))
 
     assert len(seen) >= 2
     assert [c.seq for c in seen] == sorted(c.seq for c in seen)
@@ -650,9 +690,7 @@ async def test_a_cue_ends_when_speech_stops_not_when_the_segment_closes() -> Non
 
     seen: list[Committed] = []
 
-    pipeline = make_pipeline(duration_ms=4000)
-    pipeline.on_segment = seen.append
-    await run_to_completion(pipeline)
+    await run_to_completion(make_pipeline(duration_ms=4000, on_segment=seen.append))
 
     assert seen
     for committed in seen:
@@ -667,9 +705,13 @@ async def test_a_broken_segment_sink_cannot_stop_the_lecture() -> None:
     def explode(_: Committed) -> None:
         raise RuntimeError("the transcript writer is broken")
 
-    pipeline = make_pipeline()
-    pipeline.on_segment = explode
-    hub = await run_to_completion(pipeline)
+    hub = await run_to_completion(make_pipeline(on_segment=explode))
 
     assert hub.segments
     assert any(s.state == "final" for s in hub.segments)
+
+
+def test_the_recording_hub_stays_a_real_hub() -> None:
+    """A test double that drifted from the real thing would hide bugs."""
+
+    assert issubclass(RecordingHub, Hub)

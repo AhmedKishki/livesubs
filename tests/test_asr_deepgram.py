@@ -469,3 +469,18 @@ async def test_close_completes_when_the_send_queue_is_full() -> None:
 
 async def _drain(asr: DeepgramAsr) -> list[AsrEvent]:
     return [event async for event in asr.events()]
+
+
+def test_the_stream_is_opened_for_the_language_the_speaker_uses() -> None:
+    english = DeepgramAsr(api_key="k")._uri(AsrConfig(language="en"))
+    german = DeepgramAsr(api_key="k")._uri(AsrConfig(language="de"))
+
+    assert "language=en" in english
+    assert "language=de" in german
+    assert "model=nova-3" in german
+
+
+def test_an_explicit_language_option_overrides_the_mode() -> None:
+    uri = DeepgramAsr(api_key="k", language="de-CH")._uri(AsrConfig(language="de"))
+
+    assert "language=de-CH" in uri

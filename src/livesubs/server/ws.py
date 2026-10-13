@@ -9,17 +9,20 @@ chatty client filling the receive buffer.
 
 from __future__ import annotations
 
-import json
 import logging
+import re
 
 import anyio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from pydantic import TypeAdapter, ValidationError
 
 from livesubs.config import Settings
-from livesubs.events import EVENT_VERSION, WireMessage
+from livesubs.events import AckMessage, ClientMessage, WireMessage
 from livesubs.hub import ClientRole, Hub, Subscriber
+from livesubs.languages import LANGUAGES
+from livesubs.server.sessions import Session
 
-__all__ = ["build_router"]
+__all__ = ["UnsupportedLanguage", "build_router", "role_from"]
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +34,17 @@ WS_UNSUPPORTED_LANGUAGE = 4403
 HEARTBEAT_INTERVAL_S = 10.0
 CLIENT_IDLE_TIMEOUT_S = 30.0
 
-#: The exact query value that opts a client into Arabic. Anything else is German:
-#: an unknown or misspelled role must never silently grant a different language.
-_ARABIC_ROLE = "viewer_ar"
+#: Explicit language roles: ``viewer_de``, ``viewer_ar``. A plain ``viewer`` is the default.
+_LANGUAGE_ROLE = re.compile(r"viewer_([a-z]{2,3})")
+_CLIENT_MESSAGE = TypeAdapter(ClientMessage)
+
+
+class UnsupportedLanguage(Exception):
+    """A viewer asked for a language this session cannot produce."""
+
+    def __init__(self, language: str) -> None:
+        super().__init__(language)
+        self.language = language
 
 
 async def _refuse(websocket: WebSocket, code: int, reason: str) -> None:
@@ -50,19 +61,30 @@ async def _refuse(websocket: WebSocket, code: int, reason: str) -> None:
     await websocket.close(code=code, reason=reason)
 
 
-def _role_from(value: str | None) -> ClientRole:
+def role_from(value: str | None, session: Session) -> ClientRole:
     """Map a ``role`` query value to a client role by exact match.
 
-    Only the exact string ``admin`` gets the operator role and only the exact string
-    ``viewer_ar`` opts into Arabic. Every unknown value is an ordinary German viewer,
-    so a typo cannot widen what a device receives.
+    ``admin`` is the operator console. ``viewer_<code>`` asks for one language, and is
+    refused (:class:`UnsupportedLanguage`) unless this session produces it. Every other
+    value, including a missing one and a typo, is an ordinary viewer of the session's
+    default language, so a misspelling can never widen what a device receives or put it
+    in a language nobody chose.
+
+    The default viewer is what a plain QR scan gets: the mode's first target language.
+    Every other language needs its explicit role.
     """
 
     if value == "admin":
-        return ClientRole.ADMIN
-    if value == _ARABIC_ROLE:
-        return ClientRole.VIEWER_AR
-    return ClientRole.VIEWER
+        return ClientRole.admin()
+
+    match = _LANGUAGE_ROLE.fullmatch(value or "")
+    if match is not None and match.group(1) in LANGUAGES:
+        language = match.group(1)
+        if language not in session.targets:
+            raise UnsupportedLanguage(language)
+        return ClientRole.viewer(language)
+
+    return ClientRole.viewer(session.default_language)
 
 
 async def _pump(websocket: WebSocket, hub: Hub, subscriber: Subscriber) -> None:
@@ -78,7 +100,7 @@ async def _pump(websocket: WebSocket, hub: Hub, subscriber: Subscriber) -> None:
         # treating that as a timeout threw the batch away after the mailbox had
         # already emptied itself into it.
         if batch is None:
-            await websocket.send_text(json.dumps({"v": EVENT_VERSION, "type": "ping"}))
+            await websocket.send_text(hub.ping())
             continue
         if not batch:
             return
@@ -99,18 +121,18 @@ async def _read_acks(websocket: WebSocket, session_id: str) -> None:
             return
 
         try:
-            payload = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
+            message = _CLIENT_MESSAGE.validate_json(raw)
+        except ValidationError:
             continue
 
-        if isinstance(payload, dict) and payload.get("type") == "ack":
+        if isinstance(message, AckMessage):
             logger.debug(
                 "render ack session=%s seq=%s rev=%s rendered_in_ms=%s dropped=%s",
                 session_id,
-                payload.get("seq"),
-                payload.get("rev"),
-                payload.get("rendered_in_ms"),
-                payload.get("dropped"),
+                message.seq,
+                message.rev,
+                message.rendered_in_ms,
+                message.dropped,
             )
 
 
@@ -126,16 +148,17 @@ def build_router(settings: Settings) -> APIRouter:
             await _refuse(websocket, WS_UNKNOWN_SESSION, f"unknown session: {session_id}")
             return
 
-        role = _role_from(websocket.query_params.get("role"))
-
-        # Refuse an Arabic request the publisher cannot serve *before* subscribing, so
-        # no demand is recorded and no billed provider is opened for a language that
-        # would never produce a line.
-        if role is ClientRole.VIEWER_AR and "ar" not in getattr(session, "languages", ("de",)):
+        # Refuse a language the publisher cannot serve *before* subscribing, so no demand is
+        # recorded and no billed provider is opened for a language that would never
+        # produce a line.
+        try:
+            role = role_from(websocket.query_params.get("role"), session)
+        except UnsupportedLanguage as unsupported:
+            name = LANGUAGES[unsupported.language].name
             await _refuse(
                 websocket,
                 WS_UNSUPPORTED_LANGUAGE,
-                "Arabic subtitles are not available for this session",
+                f"{name} subtitles are not available for this session",
             )
             return
 

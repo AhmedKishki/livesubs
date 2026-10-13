@@ -260,12 +260,27 @@ def read_cues(directory: Path, code: str, fmt: str = "srt") -> list[tuple[int, i
     return parse_srt(text.replace("WEBVTT\n\n", "")) if fmt == "vtt" else parse_srt(text)
 
 
-def record(tmp_path: Path, *segments: Committed, **kwargs: object) -> tuple[SubtitleRecorder, Path]:
-    directory = tmp_path / "artifacts"
-    recorder = SubtitleRecorder(directory=directory, stem=STEM, **kwargs)  # type: ignore[arg-type]
+def segment(
+    seq: int, start: int, end: int, src: str, text: str, language: str = "de"
+) -> Committed:
+    return Committed(
+        seq=seq, start_ms=start, end_ms=end, src=src, text=text, language=language
+    )
 
-    for segment in segments:
-        recorder(segment)
+
+def record(
+    tmp_path: Path,
+    *segments: Committed,
+    source_code: str = "en",
+    target_codes: tuple[str, ...] = ("de",),
+) -> tuple[SubtitleRecorder, Path]:
+    directory = tmp_path / "artifacts"
+    recorder = SubtitleRecorder(
+        directory=directory, stem=STEM, source_code=source_code, target_codes=target_codes
+    )
+
+    for item in segments:
+        recorder(item)
     recorder.close()
 
     return recorder, directory
@@ -274,15 +289,17 @@ def record(tmp_path: Path, *segments: Committed, **kwargs: object) -> tuple[Subt
 def test_the_recorder_is_callable(tmp_path: Path) -> None:
     """It is handed to the pipeline as ``on_segment``, so it has to be."""
 
-    assert callable(SubtitleRecorder(directory=tmp_path, stem=STEM))
+    recorder = SubtitleRecorder(
+        directory=tmp_path, stem=STEM, source_code="en", target_codes=("de",)
+    )
+
+    assert callable(recorder)
 
 
 def test_both_languages_are_written_in_both_formats(tmp_path: Path) -> None:
     """Four small text files, because the two formats are used by different tools."""
 
-    recorder, _ = record(
-        tmp_path, Committed(seq=0, start_ms=0, end_ms=1500, src="hello there", de="hallo")
-    )
+    recorder, _ = record(tmp_path, segment(0, 0, 1500, "hello there", "hallo"))
 
     assert sorted(path.name for path in recorder.paths) == [
         f"{STEM}.de.srt",
@@ -295,9 +312,7 @@ def test_both_languages_are_written_in_both_formats(tmp_path: Path) -> None:
 
 
 def test_each_language_file_holds_its_own_text(tmp_path: Path) -> None:
-    _, directory = record(
-        tmp_path, Committed(seq=0, start_ms=0, end_ms=1500, src="hello there", de="hallo")
-    )
+    _, directory = record(tmp_path, segment(0, 0, 1500, "hello there", "hallo"))
 
     assert read_cues(directory, "de")[0][3] == "hallo"
     assert read_cues(directory, "en")[0][3] == "hello there"
@@ -308,8 +323,8 @@ def test_both_languages_share_identical_timings(tmp_path: Path) -> None:
 
     _, directory = record(
         tmp_path,
-        Committed(seq=0, start_ms=0, end_ms=1500, src="one", de="eins"),
-        Committed(seq=1, start_ms=2200, end_ms=3800, src="two", de="zwei"),
+        segment(0, 0, 1500, "one", "eins"),
+        segment(1, 2200, 3800, "two", "zwei"),
     )
 
     german = read_cues(directory, "de")
@@ -321,9 +336,7 @@ def test_both_languages_share_identical_timings(tmp_path: Path) -> None:
 def test_cue_timings_are_the_audio_span(tmp_path: Path) -> None:
     """The timings come from the audio clock, which is what lines up with the WAV."""
 
-    _, directory = record(
-        tmp_path, Committed(seq=0, start_ms=1234, end_ms=5678, src="a", de="b")
-    )
+    _, directory = record(tmp_path, segment(0, 1234, 5678, "a", "b"))
 
     _, start, end, _ = read_cues(directory, "de")[0]
     assert (start, end) == (1234, 5678)
@@ -334,9 +347,9 @@ def test_cues_are_ordered_and_do_not_overlap(tmp_path: Path) -> None:
 
     _, directory = record(
         tmp_path,
-        Committed(seq=0, start_ms=0, end_ms=1000, src="a", de="a"),
-        Committed(seq=1, start_ms=1500, end_ms=2500, src="b", de="b"),
-        Committed(seq=2, start_ms=2600, end_ms=3000, src="c", de="c"),
+        segment(0, 0, 1000, "a", "a"),
+        segment(1, 1500, 2500, "b", "b"),
+        segment(2, 2600, 3000, "c", "c"),
     )
 
     cues = read_cues(directory, "de")
@@ -347,10 +360,7 @@ def test_cues_are_ordered_and_do_not_overlap(tmp_path: Path) -> None:
 
 
 def test_the_vtt_files_are_well_formed_too(tmp_path: Path) -> None:
-    _, directory = record(
-        tmp_path,
-        Committed(seq=0, start_ms=0, end_ms=1500, src="hello", de="hallo"),
-    )
+    _, directory = record(tmp_path, segment(0, 0, 1500, "hello", "hallo"))
 
     for code in ("en", "de"):
         text = (directory / f"{STEM}.{code}.vtt").read_text(encoding="utf-8")
@@ -362,22 +372,84 @@ def test_the_vtt_files_are_well_formed_too(tmp_path: Path) -> None:
 def test_the_stem_pairs_the_files_with_the_audio(tmp_path: Path) -> None:
     """The whole point of a shared stem: the folder is browsable by name."""
 
-    recorder, directory = record(
-        tmp_path, Committed(seq=0, start_ms=0, end_ms=1500, src="a", de="b")
-    )
+    recorder, directory = record(tmp_path, segment(0, 0, 1500, "a", "b"))
 
     assert {path.stem.split(".")[0] for path in recorder.paths} == {STEM}
     assert len(list(directory.glob(f"{STEM}.*"))) == 4
 
 
-def test_a_custom_target_language_changes_the_file_name(tmp_path: Path) -> None:
-    """The session language is configurable, so the file must follow it."""
-
+def test_the_file_names_follow_the_languages_in_use(tmp_path: Path) -> None:
     recorder, _ = record(
         tmp_path,
-        Committed(seq=0, start_ms=0, end_ms=1500, src="a", de="b"),
-        target_code="fr",
+        segment(0, 0, 1500, "a", "b", language="fr"),
+        target_codes=("fr",),
     )
 
     assert any(path.name == f"{STEM}.fr.srt" for path in recorder.paths)
     assert not any(path.name == f"{STEM}.de.srt" for path in recorder.paths)
+
+
+# --- several target languages, and either speaker ------------------------------------
+
+
+def test_every_target_language_gets_its_own_files(tmp_path: Path) -> None:
+    recorder, directory = record(
+        tmp_path,
+        segment(0, 0, 1000, "hello there", "hallo", "de"),
+        segment(0, 0, 1000, "hello there", "مرحبا", "ar"),
+        target_codes=("de", "ar"),
+    )
+
+    names = sorted(path.name for path in recorder.paths)
+    assert names == [f"{STEM}.{code}.{fmt}" for code in ("ar", "de", "en") for fmt in ("srt", "vtt")]
+    assert read_cues(directory, "de")[0][3] == "hallo"
+    assert read_cues(directory, "ar")[0][3] == "مرحبا"
+
+
+def test_the_speakers_words_are_written_once_however_many_languages_translated_them(
+    tmp_path: Path,
+) -> None:
+    _, directory = record(
+        tmp_path,
+        segment(0, 0, 1000, "hello there", "hallo", "de"),
+        segment(0, 0, 1000, "hello there", "مرحبا", "ar"),
+        target_codes=("de", "ar"),
+    )
+
+    assert [cue[3] for cue in read_cues(directory, "en")] == ["hello there"]
+
+
+def test_a_room_that_read_only_one_language_still_gets_a_transcript(tmp_path: Path) -> None:
+    """The speaker's words used to be written only by the German stream."""
+
+    _, directory = record(
+        tmp_path,
+        segment(0, 0, 1000, "hello there", "مرحبا", "ar"),
+        target_codes=("de", "ar"),
+    )
+
+    assert [cue[3] for cue in read_cues(directory, "en")] == ["hello there"]
+    assert [cue[3] for cue in read_cues(directory, "ar")] == ["مرحبا"]
+
+
+def test_a_german_speaker_is_recorded_as_german_with_english_and_arabic_files(
+    tmp_path: Path,
+) -> None:
+    recorder, directory = record(
+        tmp_path,
+        segment(0, 0, 1500, "Guten Tag zusammen", "good day everyone", "en"),
+        segment(0, 0, 1500, "Guten Tag zusammen", "طاب يومكم", "ar"),
+        source_code="de",
+        target_codes=("en", "ar"),
+    )
+
+    assert {path.name.split(".")[1] for path in recorder.paths} == {"de", "en", "ar"}
+    assert read_cues(directory, "de")[0][3] == "Guten Tag zusammen"
+    assert read_cues(directory, "en")[0][3] == "good day everyone"
+
+
+def test_a_segment_for_a_language_with_no_file_is_ignored(tmp_path: Path) -> None:
+    recorder, directory = record(tmp_path, segment(0, 0, 1000, "a", "b", "fr"))
+
+    assert not (directory / f"{STEM}.fr.srt").exists()
+    assert recorder.errors == {}

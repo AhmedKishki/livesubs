@@ -11,9 +11,13 @@ from pydantic import TypeAdapter, ValidationError
 
 from livesubs.events import (
     EVENT_VERSION,
+    AckMessage,
+    ClientMessage,
     ErrorMessage,
     HelloMessage,
     HelloPayload,
+    PingMessage,
+    PongMessage,
     SegmentMessage,
     SegmentState,
     StatusMessage,
@@ -25,6 +29,7 @@ from livesubs.events import (
 )
 
 WIRE_ADAPTER = TypeAdapter(WireMessage)
+CLIENT_ADAPTER = TypeAdapter(ClientMessage)
 
 
 def _segment(seq: int = 1, rev: int = 0, state: SegmentState = SegmentState.DRAFT) -> SubtitleSegment:
@@ -32,26 +37,46 @@ def _segment(seq: int = 1, rev: int = 0, state: SegmentState = SegmentState.DRAF
         seq=seq,
         rev=rev,
         state=state,
-        de="Die Amplitude nimmt mit der Zeit exponentiell ab.",
+        language="de",
+        text="Die Amplitude nimmt mit der Zeit exponentiell ab.",
         src="The amplitude decreases exponentially over time.",
         timing=Timing(audio_ms=2000, emit_ms=2400),
     )
 
 
-def test_version_is_one() -> None:
-    assert EVENT_VERSION == 1
+def test_the_version_marks_the_language_neutral_format() -> None:
+    """Version 2 replaced the `de` and `ar` fields with `language` and `text`."""
+
+    assert EVENT_VERSION == 2
 
 
-def test_segment_serialises_both_languages() -> None:
+def test_a_segment_carries_its_text_and_the_language_it_is_in() -> None:
     payload = _segment()
-    assert payload.de.startswith("Die Amplitude")
-    # The English source must survive serialisation: the operator console needs
-    # it to diagnose a bad translation, even though the viewer never shows it.
+    assert payload.language == "de"
+    assert payload.text.startswith("Die Amplitude")
+    # The speaker's own words must survive serialisation: the operator console needs
+    # them to diagnose a bad translation, even though the viewer never shows them.
     assert payload.src is not None
 
 
+def test_no_field_belongs_to_one_language() -> None:
+    """Adding a target language must change no message."""
+
+    fields = set(SubtitleSegment.model_fields)
+
+    assert fields.isdisjoint({"de", "ar", "en"})
+    assert {"language", "text"} <= fields
+
+
+def test_a_segment_must_name_its_language() -> None:
+    with pytest.raises(ValidationError):
+        SubtitleSegment(seq=1, text="x", timing=Timing(audio_ms=0, emit_ms=1))  # type: ignore[call-arg]
+
+
 def test_src_is_optional() -> None:
-    payload = SubtitleSegment(seq=1, de="Nur Deutsch", timing=Timing(audio_ms=0, emit_ms=1))
+    payload = SubtitleSegment(
+        seq=1, language="en", text="Only the translation", timing=Timing(audio_ms=0, emit_ms=1)
+    )
     assert payload.src is None
     assert payload.rev == 0
     assert payload.state is SegmentState.DRAFT
@@ -86,7 +111,9 @@ def test_timing_rejects_negative_timestamps() -> None:
 
 def test_confidence_is_bounded() -> None:
     with pytest.raises(ValidationError):
-        SubtitleSegment(seq=0, de="x", confidence=1.5, timing=Timing(audio_ms=0, emit_ms=0))
+        SubtitleSegment(
+            seq=0, language="de", text="x", confidence=1.5, timing=Timing(audio_ms=0, emit_ms=0)
+        )
 
 
 def test_word_timings_are_optional_because_providers_differ() -> None:
@@ -102,16 +129,37 @@ def test_word_timings_are_optional_because_providers_differ() -> None:
     assert with_words.words[0].text == "Die"
 
 
-def test_hello_announces_german_only_default() -> None:
-    hello = HelloMessage(data=HelloPayload(session_id="s1", session_name="Physik I"))
-    assert hello.data.language == "de"
+def test_hello_names_the_speaker_and_the_languages_on_offer() -> None:
+    hello = HelloMessage(
+        data=HelloPayload(
+            session_id="s1", session_name="Physik I", source="en", targets=["de", "ar"]
+        )
+    )
+
+    assert hello.data.source == "en"
+    assert hello.data.targets == ["de", "ar"]
     assert hello.data.version == EVENT_VERSION
+    # Filled in per connection, so the shared copy does not claim a viewer's language.
+    assert hello.data.language is None
+
+
+def test_a_status_may_be_about_one_language_only() -> None:
+    everyone = StatusMessage.model_validate({"type": "status", "data": {"status": "delayed"}})
+    german = StatusMessage.model_validate(
+        {"type": "status", "data": {"status": "delayed", "language": "de"}}
+    )
+
+    assert everyone.data.language is None
+    assert german.data.language == "de"
 
 
 def test_discriminated_union_parses_each_type() -> None:
     messages = [
-        HelloMessage(data=HelloPayload(session_id="s1", session_name="n")),
+        HelloMessage(
+            data=HelloPayload(session_id="s1", session_name="n", source="en", targets=["de"])
+        ),
         SegmentMessage(data=_segment()),
+        PingMessage(),
         StatusMessage.model_validate({"type": "status", "data": {"status": "delayed"}}),
         ErrorMessage.model_validate({"type": "error", "data": {"message": "x", "stage": "asr"}}),
     ]
@@ -131,3 +179,20 @@ def test_dumps_keeps_explicit_nulls() -> None:
 
     payload = _segment()
     assert '"confidence":null' in dumps(payload).replace(" ", "")
+
+
+def test_the_heartbeat_is_part_of_the_contract() -> None:
+    assert dumps(PingMessage()).replace(" ", "") == f'{{"v":{EVENT_VERSION},"type":"ping"}}'
+
+
+def test_what_a_viewer_may_send_is_part_of_the_contract() -> None:
+    assert isinstance(CLIENT_ADAPTER.validate_python({"type": "pong"}), PongMessage)
+
+    ack = CLIENT_ADAPTER.validate_python(
+        {"type": "ack", "seq": 4, "rev": 2, "rendered_in_ms": 9, "dropped": 1}
+    )
+    assert isinstance(ack, AckMessage)
+    assert (ack.seq, ack.rev, ack.dropped) == (4, 2, 1)
+
+    with pytest.raises(ValidationError):
+        CLIENT_ADAPTER.validate_python({"type": "hello"})

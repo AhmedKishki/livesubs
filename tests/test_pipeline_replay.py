@@ -181,10 +181,10 @@ async def run_pipeline(source: SpeechIntervals, script: list[tuple[float, str]])
     pipeline = LivePipeline(
         source=source,
         asr=ScriptedRecogniser(script),
-        mt=translator,
+        translators={"de": translator},
         config=PipelineConfig(),
     )
-    await pipeline.run(Hub(), session_id="replay", stop=asyncio.Event())
+    await pipeline.run(Hub(("de",)), session_id="replay", stop=asyncio.Event())
     return translator.sources
 
 

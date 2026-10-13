@@ -1,8 +1,8 @@
 """Timestamped subtitle files, so a recording can be overlaid on a video.
 
-Every committed segment is written twice: once in the source language and once in
-German. Both files carry the same cue timings, and those timings come from the
-**audio clock** rather than from wall time.
+Every committed segment is written once in the speaker's language and once in each target
+language it was translated into. All the files carry the same cue timings, and those timings
+come from the **audio clock** rather than from wall time.
 
 That is the whole point of the design. The audio clock starts at zero on the first
 captured frame, and so does the archived WAV, so a cue's timestamps and the
@@ -64,16 +64,18 @@ class Cue:
 
 @runtime_checkable
 class CueSource(Protocol):
-    """Anything carrying a committed segment's audio span and both of its texts.
+    """Anything carrying a committed segment's audio span, its source and its translation.
 
     Structural rather than imported, so this module does not depend on the pipeline
     that produces them.
     """
 
+    seq: int
     start_ms: int
     end_ms: int
     src: str
-    de: str
+    text: str
+    language: str
 
 
 def normalise_text(text: str) -> str:
@@ -227,7 +229,7 @@ class SubtitleWriter:
 
 
 class SubtitleRecorder:
-    """Writes every committed segment to a source-language file and a German one.
+    """Writes every committed segment to a file for the speaker and one per target language.
 
     Callable, so it can be handed to the pipeline directly as its segment sink. All
     the files share the recording stem, so they pair with the archived audio by name:
@@ -235,14 +237,19 @@ class SubtitleRecorder:
     .. code-block:: text
 
         demo-20260922-145157.wav        the audio the timings refer to
-        demo-20260922-145157.de.srt     what a viewer read
+        demo-20260922-145157.de.srt     what a German viewer read
+        demo-20260922-145157.ar.srt     what an Arabic viewer read
         demo-20260922-145157.en.srt     what was actually said
         demo-20260922-145157.de.vtt     the same, for a browser <track>
-        demo-20260922-145157.en.vtt
 
-    Both formats for both languages, because the two are used by different tools and
+    Both formats for every language, because the two are used by different tools and
     neither is a superset of the other in practice. The files are small text; the
     duplication is cheaper than a decision about which one someone will need.
+
+    The speaker's words are written once per segment, however many languages translated it,
+    and also when only one language did: they are recorded by whichever translation of the
+    segment arrives first, so a room that read only Arabic still gets a transcript of what
+    was said.
     """
 
     def __init__(
@@ -250,18 +257,16 @@ class SubtitleRecorder:
         *,
         directory: str | Path,
         stem: str,
-        source_code: str = "en",
-        target_code: str = "de",
+        source_code: str,
+        target_codes: tuple[str, ...],
         formats: tuple[CueFormat, ...] = DEFAULT_FORMATS,
-        extra_target_codes: tuple[str, ...] = (),
     ) -> None:
         self.directory = Path(directory)
         self.stem = stem
         self.source_code = source_code
-        self.target_code = target_code
-        self.extra_target_codes = tuple(extra_target_codes)
+        self.target_codes = tuple(target_codes)
 
-        codes = (source_code, target_code, *self.extra_target_codes)
+        codes = dict.fromkeys((source_code, *self.target_codes))
         self.writers: dict[tuple[str, CueFormat], SubtitleWriter] = {
             (code, fmt): SubtitleWriter(
                 self.directory / f"{stem}.{code}.{fmt}", fmt=fmt
@@ -269,6 +274,7 @@ class SubtitleRecorder:
             for code in codes
             for fmt in formats
         }
+        self._source_written: set[int] = set()
 
     @property
     def paths(self) -> list[Path]:
@@ -287,25 +293,12 @@ class SubtitleRecorder:
         }
 
     def __call__(self, segment: CueSource) -> None:
-        """Record one committed segment. Matches ``LivePipeline.on_segment``.
+        """Record one committed segment. Matches ``LivePipeline.on_segment``."""
 
-        The segment's ``language`` decides which target file receives its text. The
-        English source is written once, by the German stream, so an Arabic sidecar
-        never duplicates the English cues. An Arabic-only session therefore writes no
-        English sidecar, which is the documented limitation of keeping one source file.
-        """
-
-        language = getattr(segment, "language", "de")
-
-        if language == "ar":
-            arabic = getattr(segment, "ar", None) or ""
-            self._add("ar", segment, arabic)
-            return
-
-        # German (and any unknown language) writes the source once plus the configured
-        # target, which is the pre-Arabic behaviour unchanged.
-        self._add(self.source_code, segment, segment.src)
-        self._add(self.target_code, segment, segment.de)
+        if segment.seq not in self._source_written:
+            self._source_written.add(segment.seq)
+            self._add(self.source_code, segment, segment.src)
+        self._add(segment.language, segment, segment.text)
 
     def _add(self, code: str, segment: CueSource, text: str) -> None:
         if not text:

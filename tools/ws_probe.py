@@ -6,6 +6,10 @@ the server is not running, the session id is wrong, or the socket connects but n
 segments are flowing.
 
     uv run python tools/ws_probe.py --session demo --role viewer --count 6
+    uv run python tools/ws_probe.py --session demo --role viewer_ar --count 6
+
+The role is ``viewer`` for the session's default language, ``viewer_<code>`` for another
+language the session offers, or ``admin`` for every language and the speaker's own words.
 """
 
 from __future__ import annotations
@@ -34,7 +38,8 @@ async def probe(url: str, *, count: int, timeout: float) -> int:
                     src = data.get("src")
                     print(
                         f"segment seq={data.get('seq')} rev={data.get('rev')} "
-                        f"state={data.get('state')} de={data.get('de')!r} "
+                        f"state={data.get('state')} language={data.get('language')} "
+                        f"text={data.get('text')!r} "
                         f"src={'present' if src else 'stripped'}",
                         flush=True,
                     )
@@ -54,7 +59,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--session", default="demo")
-    parser.add_argument("--role", default="viewer", choices=("viewer", "admin"))
+    parser.add_argument(
+        "--role",
+        default="viewer",
+        help="viewer, viewer_<code> or admin (default: viewer)",
+    )
     parser.add_argument("--count", type=int, default=6, help="messages to read")
     parser.add_argument("--timeout", type=float, default=10.0)
     args = parser.parse_args(argv)

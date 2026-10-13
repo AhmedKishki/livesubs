@@ -7,14 +7,17 @@ document is wrong.
 Rules that the overlay relies on:
 
 * ``seq`` is monotonic within a session.
-* ``rev`` starts at 0 for a new ``seq`` and only ever increases.
+* ``rev`` starts at 0 for a new ``seq`` and only ever increases, separately for each
+  target language.
 * A viewer REPLACES the displayed line when ``seq`` increases, and UPDATES it in
   place when ``rev`` increases on the same ``seq``.
 * ``state == FINAL`` means no further revisions will arrive for that ``seq``, so
   the overlay may start its reading-time hold timer.
-* ``src`` is the English source. The viewer page does NOT render it (German-only
-  requirement); the operator console does, because a mistranslation cannot be
-  diagnosed without it.
+* ``src`` is the speaker's own language. The viewer page does NOT render it; the
+  operator console does, because a mistranslation cannot be diagnosed without it.
+* A segment belongs to exactly one target language, named by ``language``, and its
+  words are in ``text``. No field is specific to a language, so adding one changes
+  no message.
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
-EVENT_VERSION = 1
+EVENT_VERSION = 2
 
 
 class SegmentState(str, Enum):
@@ -84,30 +87,19 @@ class Timing(BaseModel):
 class SubtitleSegment(BaseModel):
     """One subtitle line, at one revision.
 
-    A segment belongs to exactly one target language. A German segment carries
-    ``language="de"`` and its text in ``de``; an Arabic segment carries
-    ``language="ar"`` and its text in ``ar``, with ``de`` left empty. The two
-    streams are ordered independently and a subscriber only ever receives the
-    languages its role is allowed to see, so the fields are never mixed on the
-    wire.
-
-    ``ar`` is ``None`` on a German segment, which keeps the added field additive:
-    an older client that ignores ``language``/``ar`` still renders German.
+    A segment belongs to exactly one target language. The streams of different languages
+    are ordered independently and a subscriber only ever receives the languages its role
+    is allowed to see, so the text of two languages is never mixed on the wire.
     """
 
     seq: int = Field(ge=0)
     rev: int = Field(default=0, ge=0)
     state: SegmentState = SegmentState.DRAFT
-    language: Literal["de", "ar"] = Field(
-        default="de", description="Which target stream this segment belongs to"
+    language: str = Field(description="The target language this line is written in")
+    text: str = Field(description="The line, in ``language``")
+    src: str | None = Field(
+        default=None, description="What the speaker said, in their own language; operator only"
     )
-    de: str = Field(
-        default="", description="German text; empty on an Arabic-only segment"
-    )
-    ar: str | None = Field(
-        default=None, description="Arabic text; only present when language is 'ar'"
-    )
-    src: str | None = Field(default=None, description="English source; operator console only")
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     words: list[WordTiming] | None = None
     timing: Timing
@@ -118,13 +110,22 @@ class HelloPayload(BaseModel):
 
     session_id: str
     session_name: str
-    language: str = "de"
+    #: The language the speaker uses.
+    source: str
+    #: The languages a listener can choose. The first is what a plain QR scan gets.
+    targets: list[str]
+    #: The language this connection receives. Filled in per connection, ``None`` for the
+    #: operator console, which receives them all.
+    language: str | None = None
     version: int = EVENT_VERSION
 
 
 class StatusPayload(BaseModel):
     status: PipelineStatus
     detail: str | None = None
+    #: The target language the status is about, or ``None`` when it concerns everyone. A
+    #: translator that is down is news for its own listeners, not for the others.
+    language: str | None = None
 
 
 class ErrorPayload(BaseModel):
@@ -156,11 +157,40 @@ class ErrorMessage(BaseModel):
     data: ErrorPayload
 
 
+class PingMessage(BaseModel):
+    """Sent to an idle connection so a dead one is noticed; the client answers ``pong``."""
+
+    v: int = EVENT_VERSION
+    type: Literal["ping"] = "ping"
+
+
 WireMessage = Annotated[
-    HelloMessage | SegmentMessage | StatusMessage | ErrorMessage,
+    HelloMessage | SegmentMessage | StatusMessage | ErrorMessage | PingMessage,
     Field(discriminator="type"),
 ]
 """Any message the server may send to a viewer, discriminated on ``type``."""
+
+
+class PongMessage(BaseModel):
+    type: Literal["pong"] = "pong"
+
+
+class AckMessage(BaseModel):
+    """A viewer's report on a line it has handled.
+
+    Sent for finals and for drops, not for drafts. ``rendered_in_ms`` is measured on the
+    viewer's own clock, so it needs no synchronisation with the server's.
+    """
+
+    type: Literal["ack"] = "ack"
+    seq: int
+    rev: int
+    rendered_in_ms: int | None = None
+    dropped: int | None = None
+
+
+ClientMessage = Annotated[PongMessage | AckMessage, Field(discriminator="type")]
+"""Any message a viewer may send."""
 
 
 def dumps(message: BaseModel) -> str:

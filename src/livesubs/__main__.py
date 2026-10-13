@@ -27,6 +27,7 @@ from livesubs.keystore import (
     remove_env_var,
     upsert_env_var,
 )
+from livesubs.languages import MODES
 from livesubs.sim import SCRIPTS, replay
 
 __all__ = ["main"]
@@ -35,7 +36,7 @@ __all__ = ["main"]
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="livesubs",
-        description="Realtime English speech to German lecture subtitles.",
+        description="Realtime translated lecture subtitles for a speaker and their listeners.",
     )
     parser.add_argument("--version", action="version", version=f"livesubs {__version__}")
     parser.add_argument(
@@ -76,6 +77,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "exit with status 1 if the pipeline dies, so a supervisor such as systemd "
             "restarts the process; without it the server keeps answering and shows 'stopped'"
+        ),
+    )
+    parser.add_argument(
+        "--speaker",
+        choices=sorted(MODES),
+        default=None,
+        help=(
+            "the language the presenter speaks: en (listeners read German or Arabic) or "
+            "de (listeners read English or Arabic); default: session.speaker, then en"
         ),
     )
     parser.add_argument(
@@ -228,8 +238,13 @@ def _cmd_init_config(target: str) -> int:
     return 0
 
 
-def _cmd_check(config_path: Path | None = None, *, approach_name: str | None = None) -> int:
-    settings = get_settings(config_path)
+def _cmd_check(
+    config_path: Path | None = None,
+    *,
+    approach_name: str | None = None,
+    speaker: str | None = None,
+) -> int:
+    settings = get_settings(config_path).for_session(speaker=speaker)
 
     # The check has to reflect what will actually run. An approach that never calls a
     # vendor is perfectly usable without an API key, and telling a new user otherwise
@@ -279,6 +294,14 @@ def _cmd_check(config_path: Path | None = None, *, approach_name: str | None = N
         f"cap {settings.max_segment_ms} ms"
     )
     return 0
+
+
+def _describe_mode(settings: Settings) -> str:
+    try:
+        mode = settings.mode
+    except ValueError as exc:
+        return f"(invalid: {exc})"
+    return f"{mode.label} (default {mode.default_target})"
 
 
 def _env_path_for(scope: str) -> Path:
@@ -523,6 +546,7 @@ def _cmd_start(args: argparse.Namespace, settings: Settings) -> int:
         )
     settings = settings.for_session(session_id=args.session_id, session_name=args.session_name)
 
+    print(f"Subtitles: {settings.mode.label}", flush=True)
     print(f"Microphone source: {settings.capture_target!r}", flush=True)
     print("Speak at normal volume while capture is checked.", flush=True)
     result = preflight_main(settings, approach_name="live")
@@ -551,9 +575,7 @@ def _cmd_serve(args: argparse.Namespace, settings: Settings) -> int:
     # Before anything is built from the settings. The flag has to reach the settings once
     # here, or the approach names a session's artefacts from the config file while the
     # server registers the id from the flag.
-    settings = settings.for_session(
-        session_id=args.session_id, session_name=args.session_name
-    )
+    settings = settings.for_session(session_id=args.session_id, session_name=args.session_name)
 
     name = args.approach or _default_approach()
     options = {
@@ -711,13 +733,13 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 1
 
     if args.check:
-        return _cmd_check(config_path, approach_name=args.approach)
+        return _cmd_check(config_path, approach_name=args.approach, speaker=args.speaker)
 
     if args.preflight:
         from livesubs.preflight import _main as preflight_main
 
         return preflight_main(
-            get_settings(config_path),
+            get_settings(config_path).for_session(speaker=args.speaker),
             approach_name=args.approach or _default_approach(),
         )
 
@@ -725,12 +747,12 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _cmd_approaches()
 
     if args.serve:
-        return _cmd_serve(args, get_settings(config_path))
+        return _cmd_serve(args, get_settings(config_path).for_session(speaker=args.speaker))
 
     if args.replay:
         return asyncio.run(_cmd_replay(args.replay, args.speed))
 
-    return _cmd_start(args, get_settings(config_path))
+    return _cmd_start(args, get_settings(config_path).for_session(speaker=args.speaker))
 
 
 if __name__ == "__main__":

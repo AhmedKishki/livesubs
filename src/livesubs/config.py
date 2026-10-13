@@ -45,6 +45,7 @@ from livesubs.keystore import (
     read_env_file,
     resolve_key,
 )
+from livesubs.languages import Mode, mode_for
 
 __all__ = [
     "CONFIG_FILENAME",
@@ -150,12 +151,16 @@ class ServerSettings(_Group):
 
 
 class SessionSettings(_Group):
-    """Session identity, and where the frontend is served from."""
+    """Session identity, who is speaking, and where the frontend is served from."""
 
     id: str = Field(default="demo", validation_alias="LIVESUBS_SESSION_ID")
     name: str = Field(default="Live subtitles", validation_alias="LIVESUBS_SESSION_NAME")
-    #: The only language a viewer renders. The English source is stripped server-side.
-    language: str = Field(default="de", validation_alias="LIVESUBS_SESSION_LANGUAGE")
+    #: The language the presenter speaks. It picks the mode: an English speaker has German
+    #: or Arabic listeners, a German speaker has English or Arabic listeners.
+    speaker: str = Field(default="en", validation_alias="LIVESUBS_SESSION_SPEAKER")
+    #: Offer only some of the mode's target languages, in this order; the first is what a
+    #: plain QR scan gets. Empty means all of them.
+    targets: list[str] = Field(default_factory=list)
     web_dir: Path | None = Field(default=None, validation_alias="LIVESUBS_WEB_DIR")
 
 
@@ -185,8 +190,9 @@ class CaptureSettings(_Group):
     #: govern only the audio. Renaming the alias would break deployed `.env` files for
     #: no functional gain.
     artifacts_dir: str = Field(default="recordings", validation_alias="LIVESUBS_ARCHIVE_DIR")
-    #: Write timestamped subtitle files alongside the audio, in the source language and
-    #: in German, so a recording can be overlaid on a video of the same event.
+    #: Write timestamped subtitle files alongside the audio, in the source language and in
+    #: each target language that was read, so a recording can be overlaid on a video of the
+    #: same event.
     subtitles: bool = Field(default=True, validation_alias="LIVESUBS_SUBTITLES")
 
 
@@ -429,8 +435,28 @@ class Settings(BaseSettings):
         return self.session.name
 
     @property
-    def language(self) -> str:
-        return self.session.language
+    def mode(self) -> Mode:
+        """Who speaks and which languages listeners can read.
+
+        Raises ``ValueError`` for a speaker language no mode exists for, or a target the
+        mode does not offer.
+        """
+
+        return mode_for(self.session.speaker, self.session.targets)
+
+    @property
+    def source_language(self) -> str:
+        return self.mode.source
+
+    @property
+    def target_languages(self) -> tuple[str, ...]:
+        return self.mode.targets
+
+    @property
+    def default_language(self) -> str:
+        """The language a plain QR scan reaches."""
+
+        return self.mode.default_target
 
     @property
     def web_dir(self) -> Path | None:
@@ -547,7 +573,11 @@ class Settings(BaseSettings):
         return None
 
     def for_session(
-        self, *, session_id: str | None = None, session_name: str | None = None
+        self,
+        *,
+        session_id: str | None = None,
+        session_name: str | None = None,
+        speaker: str | None = None,
     ) -> Settings:
         """A copy of these settings with the session overridden.
 
@@ -557,16 +587,22 @@ class Settings(BaseSettings):
         status endpoints (``/healthz`` reported ``sample`` while ``/api/session`` answered
         ``unknown session: sample``). Overriding once, before anything is built from the
         settings, is what makes the flag mean one thing.
+
+        Choosing a different ``speaker`` also drops any narrowed ``targets`` from the file:
+        they were chosen for the other speaker, and the new mode's own languages apply.
         """
 
-        if session_id is None and session_name is None:
+        if session_id is None and session_name is None and speaker is None:
             return self
 
-        update: dict[str, str] = {}
+        update: dict[str, object] = {}
         if session_id is not None:
             update["id"] = session_id
         if session_name is not None:
             update["name"] = session_name
+        if speaker is not None and speaker != self.session.speaker:
+            update["speaker"] = speaker
+            update["targets"] = []
 
         return self.model_copy(update={"session": self.session.model_copy(update=update)})
 
@@ -627,6 +663,11 @@ class Settings(BaseSettings):
                     problems.append(
                         f"pipeline.{role} names unknown provider {name!r}; known: {known}"
                     )
+
+        try:
+            _ = self.mode
+        except ValueError as exc:
+            problems.append(f"session: {exc}")
 
         if self.segmentation.min_segment_ms >= self.segmentation.max_segment_ms:
             problems.append("segmentation.min_segment_ms must be below segmentation.max_segment_ms")

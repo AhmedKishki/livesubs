@@ -1,4 +1,4 @@
-"""Server tests: routes, the WebSocket contract, and the German-only guarantee.
+"""Server tests: routes, the WebSocket contract, and what each role is allowed to read.
 
 These use a ticking test publisher rather than the sim at speed=0, so delivery can
 be observed *after* a client connects. The sim's flat-out mode finishes before a
@@ -24,24 +24,32 @@ from livesubs.server import ws as websocket_routes
 TICK_S = 0.05
 
 
-class TickingPublisher:
-    """Publishes a committed segment every 50 ms until stopped."""
+#: ``(speaker, default language, optional language)`` for each mode.
+MODES = [("en", "de", "ar"), ("de", "en", "ar")]
+MODE_IDS = ["english-speaker", "german-speaker"]
 
-    def __init__(self) -> None:
+
+class TickingPublisher:
+    """Publishes one committed segment per language every 50 ms until stopped."""
+
+    def __init__(self, *languages: str) -> None:
+        self.supported_languages = languages or ("de", "ar")
         self.seq = 0
 
     async def run(self, hub: Hub, *, session_id: str, stop: asyncio.Event) -> None:
         while not stop.is_set():
-            hub.publish_segment(
-                SubtitleSegment(
-                    seq=self.seq,
-                    rev=1,
-                    state=SegmentState.FINAL,
-                    de=f"Zeile {self.seq}.",
-                    src=f"Line {self.seq}.",
-                    timing=Timing(audio_ms=self.seq * 2000, emit_ms=self.seq * 2000 + 400),
+            for language in self.supported_languages:
+                hub.publish_segment(
+                    SubtitleSegment(
+                        seq=self.seq,
+                        rev=1,
+                        state=SegmentState.FINAL,
+                        language=language,
+                        text=f"{language} line {self.seq}.",
+                        src=f"Spoken line {self.seq}.",
+                        timing=Timing(audio_ms=self.seq * 2000, emit_ms=self.seq * 2000 + 400),
+                    )
                 )
-            )
             self.seq += 1
             try:
                 await asyncio.wait_for(stop.wait(), timeout=TICK_S)
@@ -49,9 +57,9 @@ class TickingPublisher:
                 continue
 
 
-def make_client(publisher=None) -> TestClient:
+def make_client(publisher=None, speaker: str = "en") -> TestClient:
     # _env_file=None keeps a developer's real .env out of the test run.
-    settings = Settings(_env_file=None)
+    settings = Settings(_env_file=None, session={"speaker": speaker})
     return TestClient(create_app(settings, publisher or TickingPublisher()))
 
 
@@ -83,8 +91,6 @@ def test_viewer_page_loads_for_the_configured_session() -> None:
         response = client.get("/s/demo")
         assert response.status_code == 200
         assert "/static/viewer.js" in response.text
-        # The German declaration matters: it drives hyphenation for long compounds.
-        assert 'lang="de"' in response.text
 
 
 def test_unknown_session_is_a_404_not_silently_served() -> None:
@@ -96,6 +102,7 @@ def test_unknown_session_is_a_404_not_silently_served() -> None:
 def test_static_assets_are_served() -> None:
     with make_client() as client:
         for asset in (
+            "language.js",
             "viewer.js",
             "overlay.js",
             "pacing.js",
@@ -116,13 +123,37 @@ def test_admin_page_loads() -> None:
 # --- session API --------------------------------------------------------------
 
 
-def test_session_metadata_matches_the_wire_contract() -> None:
-    with make_client() as client:
+@pytest.mark.parametrize(("speaker", "default", "optional"), MODES, ids=MODE_IDS)
+def test_session_metadata_matches_the_wire_contract(
+    speaker: str, default: str, optional: str
+) -> None:
+    with make_client(TickingPublisher(default, optional), speaker) as client:
         payload = client.get("/api/session").json()
         assert payload["id"] == "demo"
-        assert payload["language"] == "de"
-        assert payload["version"] == 1
+        assert payload["source"] == speaker
+        assert payload["default"] == default
+        assert payload["languages"] == [default, optional]
+        assert payload["version"] == 2
         assert payload["ws_url"] == "/ws/demo"
+
+
+def test_session_metadata_describes_each_language_for_the_picker() -> None:
+    with make_client() as client:
+        targets = {t["code"]: t for t in client.get("/api/session").json()["targets"]}
+
+    assert targets["de"]["native"] == "Deutsch" and targets["de"]["dir"] == "ltr"
+    assert targets["ar"]["native"] == "العربية" and targets["ar"]["dir"] == "rtl"
+
+
+def test_a_publisher_that_declares_nothing_offers_only_the_default_language() -> None:
+    class Plain:
+        async def run(self, hub, *, session_id, stop):
+            await stop.wait()
+
+    with make_client(Plain(), "de") as client:
+        payload = client.get("/api/session").json()
+
+    assert payload["languages"] == ["en"]
 
 
 def test_qr_url_points_at_the_viewer_page_over_plain_http() -> None:
@@ -224,34 +255,84 @@ def test_healthz_reports_the_session_running() -> None:
 # --- WebSocket contract -------------------------------------------------------
 
 
-def test_viewer_gets_identity_health_then_subtitles_without_the_source() -> None:
-    with make_client() as client, client.websocket_connect("/ws/demo") as ws:
+@pytest.mark.parametrize(("speaker", "default", "optional"), MODES, ids=MODE_IDS)
+def test_viewer_gets_identity_health_then_subtitles_without_the_source(
+    speaker: str, default: str, optional: str
+) -> None:
+    with (
+        make_client(TickingPublisher(default, optional), speaker) as client,
+        client.websocket_connect("/ws/demo") as ws,
+    ):
         hello = ws.receive_json()
         assert hello["type"] == "hello"
         assert hello["data"]["session_id"] == "demo"
-        assert hello["data"]["language"] == "de"
+        assert hello["data"]["source"] == speaker
+        assert hello["data"]["targets"] == [default, optional]
+        assert hello["data"]["language"] == default
 
         assert ws.receive_json()["type"] == "status"
 
-        segment = next_message_of_type(ws, "segment")
-        assert segment["data"]["de"]
-        # The German-only requirement is enforced server-side, not trusted to
-        # the viewer page.
-        assert segment["data"]["src"] is None
+        # Several lines, so a leak of the other language would have had time to show.
+        for _ in range(4):
+            segment = next_message_of_type(ws, "segment")
+            assert segment["data"]["language"] == default
+            assert segment["data"]["text"]
+            # The default-language guarantee is enforced server-side, not trusted to
+            # the viewer page.
+            assert segment["data"]["src"] is None
 
 
-def test_admin_does_receive_the_source() -> None:
-    """The console cannot diagnose a bad translation without the English."""
+@pytest.mark.parametrize(("speaker", "default", "optional"), MODES, ids=MODE_IDS)
+def test_the_optional_language_needs_its_explicit_role(
+    speaker: str, default: str, optional: str
+) -> None:
+    with (
+        make_client(TickingPublisher(default, optional), speaker) as client,
+        client.websocket_connect(f"/ws/demo?role=viewer_{optional}") as ws,
+    ):
+        assert ws.receive_json()["data"]["language"] == optional
+        for _ in range(4):
+            segment = next_message_of_type(ws, "segment")
+            assert segment["data"]["language"] == optional
+            assert segment["data"]["src"] is None
 
-    with make_client() as client, client.websocket_connect("/ws/demo?role=admin") as ws:
-        segment = next_message_of_type(ws, "segment")
-        assert segment["data"]["src"] is not None
+
+@pytest.mark.parametrize(("speaker", "default", "optional"), MODES, ids=MODE_IDS)
+def test_admin_does_receive_the_source_and_every_language(
+    speaker: str, default: str, optional: str
+) -> None:
+    """The console cannot diagnose a bad translation without the speaker's own words."""
+
+    with (
+        make_client(TickingPublisher(default, optional), speaker) as client,
+        client.websocket_connect("/ws/demo?role=admin") as ws,
+    ):
+        seen = [next_message_of_type(ws, "segment")["data"] for _ in range(4)]
+
+    assert all(segment["src"] is not None for segment in seen)
+    assert {segment["language"] for segment in seen} == {default, optional}
 
 
-def test_an_unknown_role_is_treated_as_a_viewer() -> None:
-    with make_client() as client, client.websocket_connect("/ws/demo?role=superuser") as ws:
-        segment = next_message_of_type(ws, "segment")
-        assert segment["data"]["src"] is None
+@pytest.mark.parametrize("role", ["superuser", "viewer_AR", "viewer_", "Admin", "viewer_xx"])
+def test_an_unknown_role_is_treated_as_a_plain_viewer(role: str) -> None:
+    with make_client() as client, client.websocket_connect(f"/ws/demo?role={role}") as ws:
+        for _ in range(3):
+            segment = next_message_of_type(ws, "segment")
+            assert segment["data"]["language"] == "de"
+            assert segment["data"]["src"] is None
+
+
+def test_a_language_outside_the_mode_is_refused_with_4403() -> None:
+    """An English speaker has no English subtitles to offer."""
+
+    with make_client() as client:
+        with (
+            pytest.raises(WebSocketDisconnect) as refused,
+            client.websocket_connect("/ws/demo?role=viewer_en") as ws,
+        ):
+            ws.receive_json()
+        assert refused.value.code == 4403
+        assert client.get("/healthz").json()["viewers"] == 0
 
 
 def test_unknown_session_is_refused_at_the_socket() -> None:
@@ -281,7 +362,7 @@ def test_late_joiner_is_immediately_oriented() -> None:
         with client.websocket_connect("/ws/demo") as second:
             hello = next_message_of_type(second, "hello")
             assert hello["data"]["session_name"]
-            assert next_message_of_type(second, "segment")["data"]["de"]
+            assert next_message_of_type(second, "segment")["data"]["text"]
 
 
 def test_several_viewers_are_served_independently() -> None:
@@ -289,8 +370,8 @@ def test_several_viewers_are_served_independently() -> None:
         make_client() as client, client.websocket_connect("/ws/demo") as viewer_a,
         client.websocket_connect("/ws/demo") as viewer_b,
     ):
-        assert next_message_of_type(viewer_a, "segment")["data"]["de"]
-        assert next_message_of_type(viewer_b, "segment")["data"]["de"]
+        assert next_message_of_type(viewer_a, "segment")["data"]["text"]
+        assert next_message_of_type(viewer_b, "segment")["data"]["text"]
 
 
 def test_viewer_count_reflects_connected_sockets() -> None:

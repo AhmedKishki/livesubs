@@ -13,11 +13,18 @@ over WebSocket. Linux is the only supported platform; see
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-__all__ = ["TARGET_CHANNELS", "TARGET_RATE", "AudioFrame", "AudioSource"]
+__all__ = [
+    "TARGET_CHANNELS",
+    "TARGET_RATE",
+    "AudioFrame",
+    "AudioSource",
+    "Preparable",
+    "ReportsCapture",
+]
 
 #: What every backend must deliver, because it is what the ASR providers expect.
 TARGET_RATE = 16_000
@@ -64,3 +71,26 @@ class AudioSource(Protocol):
         why it can tell a muted microphone from a quiet room.
         """
         ...
+
+
+@runtime_checkable
+class Preparable(Protocol):
+    """An optional capability: work to finish before the first frame is read.
+
+    A microphone that checks its own level and corrects clipping does it here. The pipeline
+    waits for it, and stops promptly if asked to while it runs.
+    """
+
+    async def prepare(self) -> None: ...
+
+
+@runtime_checkable
+class ReportsCapture(Protocol):
+    """An optional capability: telling the pipeline how the capture device is doing.
+
+    The callback receives a ``livesubs.audio.calibration.CalibrationNotice``. A source that
+    wraps another has to forward it, or the wrapped device's problems never reach the
+    operator.
+    """
+
+    def set_calibration_reporter(self, reporter: Callable[..., None] | None) -> None: ...

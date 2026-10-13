@@ -1,12 +1,12 @@
-"""Tests for audience-gated paid work.
+"""Paid work follows the audience.
 
-The requirement these pin: transcription and translation are billed, so they must run
-only while a viewing device is connected. Capture continues across the pause, the
-frames are dropped rather than buffered, and a resumed run must not replay stale audio
-or segments nor reset ``seq``.
+A recogniser stream is billed per second and a translator per request, so neither may run
+for an empty room. These pin the lifecycle: nothing opens until a viewer arrives, it opens
+once however many arrive, it closes when the last leaves, it survives a failure by starting
+again, and no cancelled open, warm or request outlives the audience it was for.
 
-Only credential-free fakes are used. No test here opens a provider or touches a
-network.
+Only credential-free fakes are used. No test opens a provider or touches a network. The
+behaviour is the same for either speaker, so these run under both modes.
 """
 
 from __future__ import annotations
@@ -14,206 +14,95 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 
-from livesubs.asr.stub import StubAsr
+import pytest
+from support import (
+    MODE_IDS,
+    MODES,
+    AsrFactory,
+    BlockingMt,
+    BlockingWarmMt,
+    CountingMt,
+    RecordingHub,
+    finals,
+    make_gated,
+    running,
+    wait_until,
+)
+
 from livesubs.audio.synthetic import SpeechLikeSource
-from livesubs.events import SegmentMessage, WireMessage
-from livesubs.hub import ClientRole, Hub
+from livesubs.events import SegmentMessage
+from livesubs.hub import ClientRole
 from livesubs.mt.base import MtChunk, MtContext
 from livesubs.mt.passthrough import PassthroughMt
-from livesubs.pipeline import LivePipeline, PipelineConfig
-from livesubs.segmenter import SegmentBuffer
 
 
-class RecordingHub(Hub):
-    """A hub that keeps every published message, for observing a sequence."""
+@pytest.fixture(params=MODES, ids=MODE_IDS)
+def mode(request):
+    """``(speaker, (default target, other target))``."""
 
-    def __init__(self) -> None:
-        super().__init__()
-        self.messages: list[WireMessage] = []
-
-    def publish(self, message: WireMessage) -> None:
-        self.messages.append(message)
-        super().publish(message)
-
-    @property
-    def segments(self) -> list:
-        return [m.data for m in self.messages if isinstance(m, SegmentMessage)]
+    return request.param
 
 
-class LifecycleAsr:
-    """A StubAsr wrapper that counts every lifecycle transition."""
-
-    def __init__(self) -> None:
-        self.inner = StubAsr()
-        self.opens = 0
-        self.closes = 0
-        self.pushes = 0
-
-    @property
-    def healthy(self) -> bool:
-        return self.inner.healthy
-
-    async def open(self, cfg) -> None:
-        self.opens += 1
-        await self.inner.open(cfg)
-
-    async def push(self, pcm: bytes) -> None:
-        self.pushes += 1
-        await self.inner.push(pcm)
-
-    def events(self) -> AsyncIterator:
-        return self.inner.events()
-
-    async def close(self) -> None:
-        self.closes += 1
-        await self.inner.close()
-
-    def seek(self, audio_ms: int) -> None:
-        # Present so the pipeline's resume-alignment path is exercised.
-        self.seeked_to = audio_ms
+def viewer(language: str) -> ClientRole:
+    return ClientRole.viewer(language)
 
 
-class AsrFactory:
-    """Hands out fresh recognisers, recording each one for assertions."""
+def translators(mode, make=CountingMt):
+    """The default language's translator now, as in a real start, and the rest lazily."""
 
-    def __init__(self) -> None:
-        self.instances: list[LifecycleAsr] = []
-
-    def __call__(self) -> LifecycleAsr:
-        instance = LifecycleAsr()
-        self.instances.append(instance)
-        return instance
+    _, (first, other) = mode
+    return {first: make(), other: make}
 
 
-class BlockingMt(PassthroughMt):
-    """A translator whose call never returns, to observe cancellation."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.started = asyncio.Event()
-        self.cancelled = asyncio.Event()
-
-    async def translate(self, src: str, ctx: MtContext) -> AsyncIterator[MtChunk]:
-        self.started.set()
-        try:
-            await asyncio.sleep(3600)
-        except asyncio.CancelledError:
-            self.cancelled.set()
-            raise
-        yield MtChunk(text_delta="", done=True)  # pragma: no cover - unreachable
+def gated(mode, mt=None, **kwargs):
+    speaker, (first, _) = mode
+    table = translators(mode)
+    if mt is not None:
+        table[first] = mt
+    return make_gated(translators=table, source_language=speaker, **kwargs)
 
 
-class CountingMt(PassthroughMt):
-    def __init__(self) -> None:
-        super().__init__()
-        self.requests = 0
-
-    async def translate(self, src: str, ctx: MtContext) -> AsyncIterator[MtChunk]:
-        self.requests += 1
-        async for chunk in super().translate(src, ctx):
-            yield chunk
-
-
-def gated_pipeline(mt: PassthroughMt | None = None) -> tuple[LivePipeline, AsrFactory]:
-    factory = AsrFactory()
-    first = factory()
-    pipeline = LivePipeline(
-        source=SpeechLikeSource(realtime=True),
-        asr=first,
-        asr_factory=factory,
-        mt=mt if mt is not None else PassthroughMt(),
-        config=PipelineConfig(telemetry_interval_ms=1000),
-        require_audience=True,
-    )
-    return pipeline, factory
-
-
-async def test_queued_mt_does_not_start_after_last_viewer_leaves() -> None:
-    mt = CountingMt()
-    pipeline, _ = gated_pipeline(mt)
-    hub = RecordingHub()
-    hub.enable_audience_gating()
-    viewer = hub.subscribe(ClientRole.VIEWER)
-    pipeline._hub = hub
-    pipeline._audience_epoch = hub.demand_generation
-    pipeline._audience_open = True
-    pipeline._finals.append((0, "fixture", 0, 20))
-    hub.unsubscribe(viewer)
-    await pipeline._publish_loop()
-    assert mt.requests == 0
-
-
-async def test_shutdown_does_not_drain_mt_after_last_viewer_leaves() -> None:
-    mt = CountingMt()
-    pipeline, _ = gated_pipeline(mt)
-    hub = RecordingHub()
-    hub.enable_audience_gating()
-    viewer = hub.subscribe(ClientRole.VIEWER)
-    pipeline._hub = hub
-    pipeline._audience_epoch = hub.demand_generation
-    pipeline._audience_open = True
-    pipeline._finals.append((0, "fixture", 0, 20))
-    pipeline._publisher = asyncio.create_task(pipeline._publish_loop())
-    hub.unsubscribe(viewer)
-    buffer = SegmentBuffer(pipeline.config.segmenter, started_ms=0, last_voice_ms=0)
-    await pipeline._finish(buffer)
-    assert mt.requests == 0
-
-
-async def wait_until(predicate, timeout: float = 3.0) -> None:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while not predicate():
-        if loop.time() > deadline:
-            raise AssertionError("condition was not met before the timeout")
-        await asyncio.sleep(0.01)
+def hub_for(mode) -> RecordingHub:
+    return RecordingHub(mode[1])
 
 
 # --- no viewer means no paid work ----------------------------------------------
 
 
-async def test_zero_audience_opens_and_warms_nothing() -> None:
-    pipeline, factory = gated_pipeline()
-    hub = RecordingHub()
-    stop = asyncio.Event()
+async def test_zero_audience_opens_and_warms_nothing(mode) -> None:
+    mt = CountingMt()
+    pipeline, factory = gated(mode, mt)
+    hub = hub_for(mode)
 
-    task = asyncio.create_task(pipeline.run(hub, session_id="gated", stop=stop))
-    try:
+    async with running(pipeline, hub):
         await asyncio.sleep(0.25)
         assert factory.instances[0].opens == 0
         assert factory.instances[0].pushes == 0
-        assert pipeline._mt_warmed is False
-        assert pipeline.asr is not None and pipeline.asr.healthy is False
-    finally:
-        stop.set()
-        await asyncio.wait_for(task, timeout=5.0)
+        assert mt.warms == 0
+        assert not pipeline._asr.healthy
 
 
-async def test_an_admin_connection_is_not_an_audience() -> None:
+async def test_an_admin_connection_is_not_an_audience(mode) -> None:
     """An operator console must never by itself create paid provider demand."""
 
-    pipeline, factory = gated_pipeline()
-    hub = RecordingHub()
-    stop = asyncio.Event()
+    mt = CountingMt()
+    pipeline, factory = gated(mode, mt)
+    hub = hub_for(mode)
 
-    task = asyncio.create_task(pipeline.run(hub, session_id="gated", stop=stop))
-    admin = hub.subscribe(ClientRole.ADMIN)
-    try:
+    async with running(pipeline, hub):
+        admin = hub.subscribe(ClientRole.admin())
         await asyncio.sleep(0.25)
         assert hub.viewer_count == 0
         assert factory.instances[0].opens == 0
-        assert pipeline._mt_warmed is False
-    finally:
+        assert mt.warms == 0
         hub.unsubscribe(admin)
-        stop.set()
-        await asyncio.wait_for(task, timeout=5.0)
 
 
-async def test_stop_while_paused_returns_promptly() -> None:
+async def test_stop_while_paused_returns_promptly(mode) -> None:
     """Waiting for a viewer must not deadlock shutdown."""
 
-    pipeline, _ = gated_pipeline()
-    hub = RecordingHub()
+    pipeline, _ = gated(mode)
+    hub = hub_for(mode)
     stop = asyncio.Event()
 
     task = asyncio.create_task(pipeline.run(hub, session_id="gated", stop=stop))
@@ -223,193 +112,220 @@ async def test_stop_while_paused_returns_promptly() -> None:
     await asyncio.wait_for(task, timeout=5.0)
 
 
+async def test_shutdown_is_not_held_up_by_idle_supervisors(mode) -> None:
+    """Every supervisor waits on its audience, and each must also wake for shutdown.
+
+    One of them used to wait the full two-second grace for a wake-up that never came, on
+    every stop, leaving a third of the session's shutdown budget for flushing the last line.
+    """
+
+    pipeline, _ = gated(mode)
+    hub = hub_for(mode)
+    stop = asyncio.Event()
+
+    task = asyncio.create_task(pipeline.run(hub, session_id="gated", stop=stop))
+    await asyncio.sleep(0.15)
+    started = asyncio.get_running_loop().time()
+    stop.set()
+    await asyncio.wait_for(task, timeout=5.0)
+
+    assert asyncio.get_running_loop().time() - started < 0.5
+
+
 # --- a viewer opens the providers, leaving closes them --------------------------
 
 
-async def test_a_viewer_opens_providers_and_warms_translation() -> None:
-    pipeline, factory = gated_pipeline()
-    hub = RecordingHub()
-    stop = asyncio.Event()
+async def test_a_viewer_opens_the_recogniser_and_warms_their_language(mode) -> None:
+    mt = CountingMt()
+    pipeline, factory = gated(mode, mt)
+    hub = hub_for(mode)
+    first = mode[1][0]
 
-    task = asyncio.create_task(pipeline.run(hub, session_id="gated", stop=stop))
-    viewer = hub.subscribe(ClientRole.VIEWER)
-    try:
+    async with running(pipeline, hub):
+        reader = hub.subscribe(viewer(first))
         await wait_until(lambda: factory.instances[0].opens == 1)
-        # The recogniser opens first, then German is warmed by its own cancellable
-        # step, so the warm is observed rather than assumed to precede the open.
-        await wait_until(lambda: pipeline._mt_warmed is True)
+        await wait_until(lambda: mt.warms == 1)
         # Speech-like audio keeps flowing, so a segment should be produced.
-        await wait_until(lambda: any(s.state == "final" for s in hub.segments))
-    finally:
-        hub.unsubscribe(viewer)
-        stop.set()
-        await asyncio.wait_for(task, timeout=5.0)
+        await wait_until(lambda: bool(finals(hub, first)))
+        hub.unsubscribe(reader)
 
 
-async def test_the_last_viewer_leaving_closes_the_provider() -> None:
-    pipeline, factory = gated_pipeline()
-    hub = RecordingHub()
-    stop = asyncio.Event()
+async def test_the_last_viewer_leaving_closes_the_provider(mode) -> None:
+    pipeline, factory = gated(mode)
+    hub = hub_for(mode)
 
-    task = asyncio.create_task(pipeline.run(hub, session_id="gated", stop=stop))
-    viewer = hub.subscribe(ClientRole.VIEWER)
-    try:
+    async with running(pipeline, hub):
+        reader = hub.subscribe(viewer(mode[1][0]))
         await wait_until(lambda: factory.instances[0].opens == 1)
-        hub.unsubscribe(viewer)
+        hub.unsubscribe(reader)
         await wait_until(lambda: factory.instances[0].closes >= 1)
-        assert pipeline._audience_open is False
-    finally:
-        stop.set()
-        await asyncio.wait_for(task, timeout=5.0)
+        assert not pipeline._asr.is_open
 
 
-async def test_a_second_viewer_does_not_reopen_after_the_first_left() -> None:
+async def test_a_second_viewer_does_not_reopen_after_the_first_left(mode) -> None:
     """Only the transition to and from zero viewers changes the provider state."""
 
-    pipeline, factory = gated_pipeline()
-    hub = RecordingHub()
-    stop = asyncio.Event()
+    pipeline, factory = gated(mode)
+    hub = hub_for(mode)
+    first_language = mode[1][0]
 
-    task = asyncio.create_task(pipeline.run(hub, session_id="gated", stop=stop))
-    first = hub.subscribe(ClientRole.VIEWER)
-    second = hub.subscribe(ClientRole.VIEWER)
-    try:
+    async with running(pipeline, hub):
+        first = hub.subscribe(viewer(first_language))
+        second = hub.subscribe(viewer(first_language))
         await wait_until(lambda: factory.instances[0].opens == 1)
         hub.unsubscribe(first)
         await asyncio.sleep(0.15)
         assert factory.instances[0].closes == 0     # one viewer still present
-        assert pipeline._audience_open is True
-    finally:
+        assert pipeline._asr.is_open
         hub.unsubscribe(second)
+
+
+# --- no translation request outlives the audience it was for ---------------------------
+
+
+async def test_queued_translations_do_not_start_after_the_last_viewer_leaves(mode) -> None:
+    class Slow(CountingMt):
+        async def translate(self, src: str, ctx: MtContext) -> AsyncIterator[MtChunk]:
+            await asyncio.sleep(0.4)
+            async for chunk in super().translate(src, ctx):
+                yield chunk
+
+    mt = Slow()
+    pipeline, _ = gated(mode, mt)
+    hub = hub_for(mode)
+
+    async with running(pipeline, hub):
+        reader = hub.subscribe(viewer(mode[1][0]))
+        await wait_until(lambda: mt.warms == 1 and mt.requests >= 1, timeout=6.0)
+        hub.unsubscribe(reader)
+        started_before = mt.requests
+        await asyncio.sleep(1.0)
+        assert mt.requests == started_before, "a queued segment was translated for nobody"
+
+
+async def test_shutdown_does_not_drain_translations_after_the_last_viewer_left(mode) -> None:
+    mt = CountingMt()
+    pipeline, _ = gated(mode, mt)
+    hub = hub_for(mode)
+
+    async with running(pipeline, hub) as stop:
+        reader = hub.subscribe(viewer(mode[1][0]))
+        await wait_until(lambda: mt.requests >= 1, timeout=6.0)
+        hub.unsubscribe(reader)
+        requests_at_leaving = mt.requests
         stop.set()
-        await asyncio.wait_for(task, timeout=5.0)
+        await asyncio.sleep(0.2)
+
+    assert mt.requests <= requests_at_leaving + 1
+
+
+async def test_in_flight_translation_is_cancelled_when_the_audience_leaves(mode) -> None:
+    """No translation request may outlive the last viewer."""
+
+    mt = BlockingMt()
+    pipeline, factory = gated(mode, mt)
+    hub = hub_for(mode)
+
+    async with running(pipeline, hub):
+        reader = hub.subscribe(viewer(mode[1][0]))
+        await wait_until(lambda: factory.instances[0].opens == 1)
+        await wait_until(lambda: mt.started.is_set(), timeout=5.0)
+        hub.unsubscribe(reader)
+        await wait_until(lambda: mt.cancelled.is_set(), timeout=5.0)
 
 
 # --- resume is fresh, ordered and continuous -----------------------------------
 
 
-async def test_resume_uses_a_fresh_provider_and_keeps_seq_monotonic() -> None:
-    pipeline, factory = gated_pipeline()
-    hub = RecordingHub()
-    stop = asyncio.Event()
+async def test_resume_uses_a_fresh_provider_and_keeps_seq_monotonic(mode) -> None:
+    pipeline, factory = gated(mode)
+    hub = hub_for(mode)
+    language = mode[1][0]
 
-    task = asyncio.create_task(pipeline.run(hub, session_id="gated", stop=stop))
-    first = hub.subscribe(ClientRole.VIEWER)
-    try:
-        await wait_until(lambda: any(s.state == "final" for s in hub.segments))
-        before = [s.seq for s in hub.segments if s.state == "final"]
+    async with running(pipeline, hub):
+        first = hub.subscribe(viewer(language))
+        await wait_until(lambda: bool(finals(hub, language)))
+        before = len(finals(hub, language))
 
         hub.unsubscribe(first)
-        await wait_until(lambda: not pipeline._audience_open)
+        await wait_until(lambda: not pipeline._asr.is_open)
 
         # A reconnect must build a fresh recogniser, not reopen the closed one.
-        second = hub.subscribe(ClientRole.VIEWER)
+        second = hub.subscribe(viewer(language))
         await wait_until(lambda: len(factory.instances) >= 2)
-        await wait_until(
-            lambda: len([s for s in hub.segments if s.state == "final"]) > len(before)
-        )
+        await wait_until(lambda: len(finals(hub, language)) > before)
         hub.unsubscribe(second)
-    finally:
-        stop.set()
-        await asyncio.wait_for(task, timeout=5.0)
 
-    keys = [(s.seq, s.rev) for s in hub.segments]
+    keys = [(s.seq, s.rev) for s in hub.segments if s.language == language]
     assert keys == sorted(keys), "seq/rev regressed across the audience pause"
-    finals = [s.seq for s in hub.segments if s.state == "final"]
     # The sequence continued where it left off rather than restarting at zero.
-    assert finals[-1] >= 1
+    assert finals(hub, language)[-1].seq >= 1
 
 
-async def test_pausing_forgets_the_cached_line_so_no_stale_text_is_replayed() -> None:
-    pipeline, _factory = gated_pipeline()
-    hub = RecordingHub()
-    stop = asyncio.Event()
+async def test_pausing_forgets_the_cached_line_so_no_stale_text_is_replayed(mode) -> None:
+    pipeline, _ = gated(mode)
+    hub = hub_for(mode)
+    language = mode[1][0]
 
-    task = asyncio.create_task(pipeline.run(hub, session_id="gated", stop=stop))
-    viewer = hub.subscribe(ClientRole.VIEWER)
-    try:
+    async with running(pipeline, hub):
+        reader = hub.subscribe(viewer(language))
         await wait_until(lambda: any(isinstance(m, SegmentMessage) for m in hub.messages))
-        assert hub._latest_segment is not None
-        hub.unsubscribe(viewer)
-        await wait_until(lambda: not pipeline._audience_open)
-        assert hub._latest_segment is None
-    finally:
-        stop.set()
-        await asyncio.wait_for(task, timeout=5.0)
+        hub.unsubscribe(reader)
+        await wait_until(lambda: not pipeline._asr.is_open)
+        await wait_until(lambda: not pipeline._workers[language].active)
+
+        assert not hub.subscribe(viewer(language)).mailbox.has_pending
 
 
-async def test_in_flight_translation_is_cancelled_when_the_audience_leaves() -> None:
-    """No translation request may outlive the last viewer."""
-
-    mt = BlockingMt()
-    pipeline, factory = gated_pipeline(mt=mt)
-    hub = RecordingHub()
-    stop = asyncio.Event()
-
-    task = asyncio.create_task(pipeline.run(hub, session_id="gated", stop=stop))
-    viewer = hub.subscribe(ClientRole.VIEWER)
-    try:
-        await wait_until(lambda: factory.instances[0].opens == 1)
-        await wait_until(lambda: mt.started.is_set(), timeout=5.0)
-        hub.unsubscribe(viewer)
-        await wait_until(lambda: mt.cancelled.is_set(), timeout=5.0)
-    finally:
-        stop.set()
-        await asyncio.wait_for(task, timeout=5.0)
-
-
-async def test_the_audio_clock_keeps_running_across_a_pause() -> None:
+async def test_the_audio_clock_keeps_running_across_a_pause(mode) -> None:
     """Capture continues, so resumed cues refer to the same rising audio clock.
 
     Restarting capture would reset ``audio_ms`` and break the alignment between a
     cue and the archived recording.
     """
 
-    pipeline, _factory = gated_pipeline()
-    hub = RecordingHub()
-    stop = asyncio.Event()
+    pipeline, _ = gated(mode)
+    hub = hub_for(mode)
+    language = mode[1][0]
 
-    task = asyncio.create_task(pipeline.run(hub, session_id="gated", stop=stop))
-    first = hub.subscribe(ClientRole.VIEWER)
-    try:
-        await wait_until(lambda: any(s.state == "final" for s in hub.segments))
-        before = max(s.timing.audio_ms for s in hub.segments if s.state == "final")
+    async with running(pipeline, hub):
+        first = hub.subscribe(viewer(language))
+        await wait_until(lambda: bool(finals(hub, language)))
+        before = max(s.timing.audio_ms for s in finals(hub, language))
 
         hub.unsubscribe(first)
-        await wait_until(lambda: not pipeline._audience_open)
+        await wait_until(lambda: not pipeline._asr.is_open)
         # Let a little real audio pass with no audience: the clock must still advance.
         await asyncio.sleep(0.4)
 
-        second = hub.subscribe(ClientRole.VIEWER)
+        second = hub.subscribe(viewer(language))
         await wait_until(
-            lambda: any(s.state == "final" and s.timing.audio_ms > before for s in hub.segments),
+            lambda: any(s.timing.audio_ms > before for s in finals(hub, language)),
             timeout=6.0,
         )
         hub.unsubscribe(second)
-    finally:
-        stop.set()
-        await asyncio.wait_for(task, timeout=5.0)
+
+
+async def test_immediate_reconnect_has_no_stale_seed_and_a_fresh_provider(mode) -> None:
+    pipeline, factory = gated(mode)
+    hub = hub_for(mode)
+    language = mode[1][0]
+
+    async with running(pipeline, hub):
+        first = hub.subscribe(viewer(language))
+        await wait_until(lambda: bool(finals(hub, language)))
+
+        hub.unsubscribe(first)
+        # Synchronous clear, before any reconnect handler can run: the seeded mailbox of
+        # a viewer who returns at once cannot carry the old line.
+        second = hub.subscribe(viewer(language))
+        assert not second.mailbox.has_pending
+
+        await wait_until(lambda: len(factory.instances) >= 2, timeout=6.0)
+        hub.unsubscribe(second)
 
 
 # --- lifecycle races the frame-driven design could not handle -------------------
-
-
-class BlockingWarmMt(PassthroughMt):
-    """A translator whose warm call blocks until cancelled."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.warm_started = asyncio.Event()
-        self.warm_cancelled = asyncio.Event()
-
-    async def warm(self) -> None:
-        self.warm_started.set()
-        try:
-            await asyncio.sleep(3600)
-        except asyncio.CancelledError:
-            self.warm_cancelled.set()
-            raise
-        self._warmed = True  # pragma: no cover - unreachable while blocking
 
 
 class ControllableAsr:
@@ -516,201 +432,186 @@ class StallingSource:
         return not self._closed
 
 
-def make_gated(source, *, asr, mt, asr_factory=None) -> LivePipeline:
+def with_recogniser(mode, asr, *, mt=None, factory=None, source=None):
+    """A gated pipeline around a controllable recogniser."""
+
+    from livesubs.pipeline import LivePipeline, PipelineConfig
+
+    speaker, (first, other) = mode
     return LivePipeline(
-        source=source,
+        source=source if source is not None else SpeechLikeSource(realtime=True),
         asr=asr,
-        asr_factory=asr_factory,
-        mt=mt,
+        asr_factory=factory,
+        translators={first: mt if mt is not None else PassthroughMt(), other: PassthroughMt},
+        source_language=speaker,
         config=PipelineConfig(telemetry_interval_ms=1000),
         require_audience=True,
     )
 
 
-async def test_disconnect_during_blocked_german_warm_cancels_the_warm() -> None:
-    """A German viewer who leaves mid-warm must cancel the billed warm promptly.
+async def test_disconnect_during_blocked_warm_cancels_the_warm(mode) -> None:
+    """A viewer who leaves mid-warm must cancel the billed warm promptly.
 
-    The shared recogniser is opened independently of the German warm, so with the
-    audience now empty it is torn down too; the guarantees under test are that no
-    German worker is started, no warm keeps running, and the warm latch is not set by
-    the aborted call.
+    The recogniser is opened independently of the warm, so with the audience now empty it
+    is torn down too; the guarantees under test are that no worker is started, no warm
+    keeps running, and the warm latch is not set by the aborted call.
     """
 
     mt = BlockingWarmMt()
     asr = ControllableAsr()
-    pipeline = make_gated(SpeechLikeSource(realtime=True), asr=asr, mt=mt)
-    hub = RecordingHub()
-    stop = asyncio.Event()
+    pipeline = with_recogniser(mode, asr, mt=mt)
+    hub = hub_for(mode)
+    language = mode[1][0]
 
-    task = asyncio.create_task(pipeline.run(hub, session_id="gated", stop=stop))
-    viewer = hub.subscribe(ClientRole.VIEWER)
-    try:
+    async with running(pipeline, hub):
+        reader = hub.subscribe(viewer(language))
         await wait_until(lambda: mt.warm_started.is_set())
 
-        hub.unsubscribe(viewer)
+        hub.unsubscribe(reader)
         await wait_until(lambda: mt.warm_cancelled.is_set())
         await wait_until(lambda: asr.closed, timeout=5.0)
-        assert pipeline._de.active is False
-        assert pipeline._mt_warmed is False
-        assert pipeline._de.warmed is False
-    finally:
-        stop.set()
-        await asyncio.wait_for(task, timeout=6.0)
+        worker = pipeline._workers[language]
+        assert worker.active is False
+        assert worker.warmed is False
 
 
-async def test_disconnect_during_blocked_open_cancels_and_closes() -> None:
+async def test_disconnect_during_blocked_open_cancels_and_closes(mode) -> None:
     asr = ControllableAsr(block_open=True)
-    pipeline = make_gated(SpeechLikeSource(realtime=True), asr=asr, mt=PassthroughMt())
-    hub = RecordingHub()
-    stop = asyncio.Event()
+    pipeline = with_recogniser(mode, asr)
+    hub = hub_for(mode)
 
-    task = asyncio.create_task(pipeline.run(hub, session_id="gated", stop=stop))
-    viewer = hub.subscribe(ClientRole.VIEWER)
-    try:
+    async with running(pipeline, hub):
+        reader = hub.subscribe(viewer(mode[1][0]))
         await wait_until(lambda: asr.open_calls == 1)
-        hub.unsubscribe(viewer)
+        hub.unsubscribe(reader)
         await wait_until(lambda: asr.closed, timeout=5.0)
-        assert pipeline._audience_open is False
-    finally:
-        stop.set()
-        await asyncio.wait_for(task, timeout=6.0)
+        assert not pipeline._asr.is_open
 
 
-async def test_stalled_capture_disconnect_cancels_paid_work_without_a_frame() -> None:
-    """The watcher acts on a disconnect even when no further frame ever arrives."""
+async def test_stalled_capture_disconnect_cancels_paid_work_without_a_frame(mode) -> None:
+    """The supervisor acts on a disconnect even when no further frame ever arrives."""
 
     source = StallingSource(SpeechLikeSource(realtime=True), frames_before_stall=140)
     factory = AsrFactory()
     first = factory()
     mt = BlockingMt()
-    pipeline = make_gated(source, asr=first, mt=mt, asr_factory=factory)
-    hub = RecordingHub()
-    stop = asyncio.Event()
+    pipeline = with_recogniser(mode, first, mt=mt, factory=factory, source=source)
+    hub = hub_for(mode)
 
-    task = asyncio.create_task(pipeline.run(hub, session_id="gated", stop=stop))
-    viewer = hub.subscribe(ClientRole.VIEWER)
-    try:
-        await wait_until(lambda: mt.started.is_set(), timeout=8.0)
-        await wait_until(lambda: source.stalled, timeout=5.0)
-        delivered = source.delivered
+    async with running(pipeline, hub):
+        reader = hub.subscribe(viewer(mode[1][0]))
+        try:
+            await wait_until(lambda: mt.started.is_set(), timeout=8.0)
+            await wait_until(lambda: source.stalled, timeout=5.0)
+            delivered = source.delivered
 
-        hub.unsubscribe(viewer)
-        await wait_until(lambda: mt.cancelled.is_set(), timeout=5.0)
-        await wait_until(lambda: first.closes >= 1, timeout=5.0)
-        # No frame was needed to trigger any of it.
-        assert source.delivered == delivered
-    finally:
-        await source.close()
-        stop.set()
-        await asyncio.wait_for(task, timeout=6.0)
+            hub.unsubscribe(reader)
+            await wait_until(lambda: mt.cancelled.is_set(), timeout=5.0)
+            await wait_until(lambda: first.closes >= 1, timeout=5.0)
+            # No frame was needed to trigger any of it.
+            assert source.delivered == delivered
+        finally:
+            # A stalled capture only notices a stop request when it is released.
+            await source.close()
 
 
-async def test_immediate_reconnect_has_no_stale_seed_and_a_fresh_provider() -> None:
-    pipeline, factory = gated_pipeline()
-    hub = RecordingHub()
-    stop = asyncio.Event()
-
-    task = asyncio.create_task(pipeline.run(hub, session_id="gated", stop=stop))
-    first = hub.subscribe(ClientRole.VIEWER)
-    try:
-        await wait_until(lambda: any(s.state == "final" for s in hub.segments))
-        assert hub._latest_segment is not None
-
-        hub.unsubscribe(first)
-        # Synchronous clear, before any reconnect handler can run.
-        assert hub._latest_segment is None
-
-        second = hub.subscribe(ClientRole.VIEWER)
-        # The seeded mailbox cannot carry the old line.
-        assert second.mailbox._segment is None
-
-        await wait_until(lambda: len(factory.instances) >= 2, timeout=6.0)
-        hub.unsubscribe(second)
-    finally:
-        stop.set()
-        await asyncio.wait_for(task, timeout=6.0)
-
-
-async def test_stop_while_blocked_opening_returns_promptly() -> None:
+async def test_stop_while_blocked_opening_returns_promptly(mode) -> None:
     asr = ControllableAsr(block_open=True)
-    pipeline = make_gated(SpeechLikeSource(realtime=True), asr=asr, mt=PassthroughMt())
-    hub = RecordingHub()
+    pipeline = with_recogniser(mode, asr)
+    hub = hub_for(mode)
     stop = asyncio.Event()
 
     task = asyncio.create_task(pipeline.run(hub, session_id="gated", stop=stop))
-    hub.subscribe(ClientRole.VIEWER)
+    hub.subscribe(viewer(mode[1][0]))
     await wait_until(lambda: asr.open_calls == 1)
 
     stop.set()
     await asyncio.wait_for(task, timeout=8.0)
 
 
-async def test_seek_failure_closes_the_provider() -> None:
+async def test_seek_failure_closes_the_provider(mode) -> None:
     """A raising seek is inside the open cleanup guard, so it must close the ASR."""
 
     factory = ControllableAsrFactory()
     first = ControllableAsr(seek_raises=True)
-    pipeline = make_gated(
-        SpeechLikeSource(realtime=True), asr=first, mt=PassthroughMt(), asr_factory=factory
-    )
-    hub = RecordingHub()
-    stop = asyncio.Event()
+    pipeline = with_recogniser(mode, first, factory=factory)
+    hub = hub_for(mode)
 
-    task = asyncio.create_task(pipeline.run(hub, session_id="gated", stop=stop))
-    hub.subscribe(ClientRole.VIEWER)
-    try:
+    async with running(pipeline, hub):
+        hub.subscribe(viewer(mode[1][0]))
         await wait_until(lambda: first.closed, timeout=6.0)
         # The failed attempt was cleaned up, and a fresh provider was retried.
         await wait_until(lambda: bool(factory.instances), timeout=6.0)
         assert factory.instances[0].opened is True
-    finally:
-        stop.set()
-        await asyncio.wait_for(task, timeout=6.0)
 
 
-async def test_first_open_failure_retries_with_a_fresh_provider() -> None:
+async def test_first_open_failure_retries_with_a_fresh_provider(mode) -> None:
     """A single open failure must not latch the pipeline while viewers remain."""
 
     factory = ControllableAsrFactory()
     first = ControllableAsr(fail_open_times=1)
-    pipeline = make_gated(
-        SpeechLikeSource(realtime=True), asr=first, mt=PassthroughMt(), asr_factory=factory
-    )
-    hub = RecordingHub()
-    stop = asyncio.Event()
+    pipeline = with_recogniser(mode, first, factory=factory)
+    hub = hub_for(mode)
 
-    task = asyncio.create_task(pipeline.run(hub, session_id="gated", stop=stop))
-    viewer = hub.subscribe(ClientRole.VIEWER)
-    try:
-        await wait_until(lambda: pipeline._audience_open, timeout=8.0)
+    async with running(pipeline, hub):
+        reader = hub.subscribe(viewer(mode[1][0]))
+        await wait_until(lambda: pipeline._asr.is_open, timeout=8.0)
         assert factory.instances
         assert factory.instances[0].opened is True
-    finally:
-        hub.unsubscribe(viewer)
-        stop.set()
-        await asyncio.wait_for(task, timeout=6.0)
+        hub.unsubscribe(reader)
 
 
-
-async def test_an_ended_provider_stream_stops_paid_work_and_retries() -> None:
+async def test_an_ended_provider_stream_stops_paid_work_and_retries(mode) -> None:
     """An ASR that hangs up on its own must not leave a dead provider in place."""
 
     factory = ControllableAsrFactory()
     first = ControllableAsr(end_events_after=0.3)
-    pipeline = make_gated(
-        SpeechLikeSource(realtime=True), asr=first, mt=PassthroughMt(), asr_factory=factory
-    )
-    hub = RecordingHub()
-    stop = asyncio.Event()
+    pipeline = with_recogniser(mode, first, factory=factory)
+    hub = hub_for(mode)
 
-    task = asyncio.create_task(pipeline.run(hub, session_id="gated", stop=stop))
-    viewer = hub.subscribe(ClientRole.VIEWER)
-    try:
-        # The first stream ends; the watcher tears it down and builds a fresh one.
+    async with running(pipeline, hub):
+        reader = hub.subscribe(viewer(mode[1][0]))
+        # The first stream ends; the supervisor tears it down and builds a fresh one.
         await wait_until(lambda: bool(factory.instances), timeout=8.0)
         assert first.closed is True
         assert factory.instances[0].opened is True
-    finally:
-        hub.unsubscribe(viewer)
-        stop.set()
-        await asyncio.wait_for(task, timeout=6.0)
+        hub.unsubscribe(reader)
+
+
+async def test_viewers_are_told_while_the_recogniser_is_down_and_when_it_is_back(mode) -> None:
+    """A dropped recogniser used to leave the status at live for the rest of the lecture."""
+
+    factory = ControllableAsrFactory()
+    first = ControllableAsr(end_events_after=0.3)
+    pipeline = with_recogniser(mode, first, factory=factory)
+    hub = hub_for(mode)
+
+    async with running(pipeline, hub):
+        reader = hub.subscribe(viewer(mode[1][0]))
+        await wait_until(
+            lambda: ("delayed", "recognition is reconnecting", None) in hub.status_events,
+            timeout=8.0,
+        )
+        await wait_until(lambda: hub.status_events[-1][0] == "live", timeout=8.0)
+        hub.unsubscribe(reader)
+
+
+async def test_a_recogniser_that_dies_without_ending_its_stream_is_replaced(mode) -> None:
+    """Some failures never end the stream; ``healthy`` is the second line of defence."""
+
+    class GoesQuiet(ControllableAsr):
+        @property
+        def healthy(self) -> bool:
+            return self.opened and not self.closed and self.open_calls < 0
+
+    factory = ControllableAsrFactory()
+    first = GoesQuiet()
+    pipeline = with_recogniser(mode, first, factory=factory)
+    pipeline.config.health_check_ms = 100
+    hub = hub_for(mode)
+
+    async with running(pipeline, hub):
+        reader = hub.subscribe(viewer(mode[1][0]))
+        await wait_until(lambda: first.closed, timeout=8.0)
+        await wait_until(lambda: bool(factory.instances), timeout=8.0)
+        hub.unsubscribe(reader)

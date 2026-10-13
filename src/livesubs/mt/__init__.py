@@ -1,4 +1,4 @@
-"""English-to-German translation adapters. Concrete implementations land in M2."""
+"""Translation adapters."""
 
 from livesubs.mt.base import MtChunk, MtContext, MtProvider
 

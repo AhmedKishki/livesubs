@@ -43,7 +43,8 @@ class SegmenterConfig:
     See ``docs/03-segmentation.md`` for why ``max_segment_ms`` defaults to 2000:
     a 2 s segment is roughly 1.5-2 s of reading at 200 wpm, so segment cadence
     and pipeline latency are matched and lag stays STABLE rather than growing.
-    Lowering it damages German, because clause-final verbs need the clause.
+    Lowering it damages translation into a language such as German, because clause-final
+    verbs need the clause.
     """
 
     #: Trailing silence that closes a segment.
@@ -52,7 +53,7 @@ class SegmenterConfig:
     max_segment_ms: int = 2000
     #: Never emit fragments shorter than this; they translate badly.
     min_segment_ms: int = 400
-    #: Previous source sentences sent to MT as context, for German word order.
+    #: Previous source sentences sent to MT as context, for word order and agreement.
     context_segments: int = 2
     #: Prefer the ASR provider's own endpointing over our VAD for pauses.
     #:

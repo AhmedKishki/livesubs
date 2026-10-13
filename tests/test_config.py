@@ -144,7 +144,9 @@ def test_provider_options_are_overridable_by_environment(
 
     assert settings().provider_option("deepgram", "model") == "nova-2"
     # Other options are untouched.
-    assert settings().provider_option("deepgram", "language") == "en"
+    assert settings().provider_option("deepgram", "url") == "wss://api.deepgram.com"
+    # The recogniser's language comes from the session's mode unless deliberately set.
+    assert settings().provider_option("deepgram", "language") is None
 
 
 def test_unknown_option_has_no_value(clean_env: None) -> None:
@@ -207,3 +209,56 @@ def test_invariants_are_ignored_for_planned_providers(
     problems = settings().validate_for_startup()
 
     assert not any("PLANNEDX" in problem for problem in problems), problems
+
+
+# --- who is speaking ---------------------------------------------------------------
+
+
+def test_the_default_session_is_an_english_speaker(clean_env: None) -> None:
+    resolved = settings()
+
+    assert resolved.mode.source == "en"
+    assert resolved.source_language == "en"
+    assert resolved.target_languages == ("de", "ar")
+    assert resolved.default_language == "de"
+
+
+def test_a_german_speaker_is_offered_english_first(clean_env: None) -> None:
+    resolved = Settings(_env_file=None, session={"speaker": "de"})
+
+    assert resolved.source_language == "de"
+    assert resolved.target_languages == ("en", "ar")
+    assert resolved.default_language == "en"
+
+
+def test_the_speaker_can_be_set_from_the_environment(
+    clean_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from livesubs.config import load_settings
+
+    monkeypatch.setenv("LIVESUBS_SESSION_SPEAKER", "de")
+
+    assert load_settings().source_language == "de"
+
+
+def test_a_deployment_can_offer_fewer_languages(clean_env: None) -> None:
+    resolved = Settings(_env_file=None, session={"speaker": "en", "targets": ["ar", "de"]})
+
+    assert resolved.target_languages == ("ar", "de")
+    assert resolved.default_language == "ar"
+
+
+def test_startup_reports_an_unsupported_speaker(clean_env: None) -> None:
+    resolved = Settings(_env_file=None, session={"speaker": "fr"})
+
+    problems = resolved.validate_for_startup(require_credentials=False)
+
+    assert any("fr" in problem and "speaker" in problem for problem in problems), problems
+
+
+def test_startup_reports_a_target_the_mode_does_not_offer(clean_env: None) -> None:
+    resolved = Settings(_env_file=None, session={"speaker": "de", "targets": ["de"]})
+
+    problems = resolved.validate_for_startup(require_credentials=False)
+
+    assert any("cannot be a target" in problem for problem in problems), problems

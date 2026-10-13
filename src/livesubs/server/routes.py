@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 
 from livesubs.config import Settings, checkout_root
 from livesubs.events import EVENT_VERSION
+from livesubs.languages import LANGUAGES
 from livesubs.preflight import lan_ip
 
 __all__ = ["build_router", "viewer_url", "web_dir"]
@@ -114,6 +115,13 @@ def viewer_url(settings: Settings, session_id: str, base_url: str | None = None)
     return f"http://localhost:{settings.port}/s/{session_id}"
 
 
+def language_json(code: str) -> dict[str, str]:
+    """What a page needs to know about one language to offer it and to lay it out."""
+
+    info = LANGUAGES[code]
+    return {"code": code, "name": info.name, "native": info.native, "dir": info.direction}
+
+
 def build_router(settings: Settings) -> APIRouter:
     router = APIRouter()
     root = web_dir(settings)
@@ -132,10 +140,12 @@ def build_router(settings: Settings) -> APIRouter:
             {
                 "id": session.id,
                 "name": session.name,
-                "language": session.language,
-                #: The target languages this session can actually produce. The viewer
-                #: page uses it to decide whether to offer the Arabic opt-in.
-                "languages": list(getattr(session, "languages", (session.language,))),
+                #: Who is speaking, and what listeners can choose. The viewer page builds
+                #: its language picker from this, so it offers only what can be produced.
+                "source": session.source,
+                "default": session.default_language,
+                "languages": list(session.targets),
+                "targets": [language_json(code) for code in session.targets],
                 "version": EVENT_VERSION,
                 "viewers": session.hub.viewer_count,
                 "viewers_by_language": session.hub.viewers_by_language,
@@ -143,6 +153,8 @@ def build_router(settings: Settings) -> APIRouter:
                 "running": session.running,
                 "uptime_s": round(session.uptime_s, 1),
                 "ws_url": f"/ws/{session.id}",
+                #: Whether this run keeps the audio, so the page can say so truthfully.
+                "recording": settings.archive_audio,
             }
         )
 
@@ -204,9 +216,7 @@ def build_router(settings: Settings) -> APIRouter:
                 "ok": running,
                 "session": settings.session_id,
                 "viewers": session.hub.viewer_count if session else 0,
-                "viewers_by_language": (
-                    session.hub.viewers_by_language if session else {"de": 0, "ar": 0}
-                ),
+                "viewers_by_language": session.hub.viewers_by_language if session else {},
                 "connections": session.hub.subscriber_count if session else 0,
             },
             status_code=200 if running else 503,

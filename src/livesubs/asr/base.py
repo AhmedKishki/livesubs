@@ -13,15 +13,15 @@ from typing import Literal, Protocol, runtime_checkable
 
 from livesubs.events import WordTiming
 
-__all__ = ["AsrConfig", "AsrEvent", "AsrProvider"]
+__all__ = ["AsrConfig", "AsrEvent", "AsrProvider", "Seekable"]
 
 
 @dataclass(slots=True)
 class AsrConfig:
     """Everything an adapter needs to open a stream.
 
-    ``language`` is the SOURCE language, which is English here. The German side
-    is the MT adapter's business, not this one's.
+    ``language`` is the SOURCE language, the one the speaker uses. Whatever the listeners
+    read is the MT adapter's business, not this one's.
     """
 
     language: str = "en"
@@ -101,4 +101,19 @@ class AsrProvider(Protocol):
         dead socket is detectable. The pipeline polls it as a second line of defence
         behind the event stream ending.
         """
+        ...
+
+
+@runtime_checkable
+class Seekable(Protocol):
+    """An optional capability: a recogniser that must stay aligned with the audio clock.
+
+    The pipeline keeps capturing while no viewer is watching, so a recogniser opened later
+    would otherwise start from zero. One that replays a timed transcript needs to be told
+    where the audio is, or it would replay lines the room has already heard. Providers that
+    recognise live audio have no use for it and leave it out.
+    """
+
+    def seek(self, audio_ms: int) -> None:
+        """Skip everything that begins at or before ``audio_ms``."""
         ...

@@ -16,7 +16,7 @@ Two decisions worth stating, because both are visible in what a viewer reads:
 
 **Plain text, not JSON.** ``docs/05-providers.md`` notes that DeepSeek's JSON output
 removes a class of parsing failures. It does - but a *streamed* JSON object arrives as
-``{"de": "Hallo`` for the first second, and the overlay would dutifully display that.
+``{"text": "Hallo`` for the first second, and the overlay would dutifully display that.
 Streaming is required, so JSON is not: the system prompt asks for the translation alone.
 
 **The system prompt is frozen.** Glossary and style rules are built once, in
@@ -34,9 +34,10 @@ import time
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
+from livesubs.languages import Language, language
 from livesubs.mt.base import MtChunk, MtContext, MtError
 
-__all__ = ["SUPPORTED_TARGETS", "OpenAiCompatMt", "build_system_prompt"]
+__all__ = ["OpenAiCompatMt", "build_system_prompt"]
 
 logger = logging.getLogger(__name__)
 
@@ -48,77 +49,54 @@ logger = logging.getLogger(__name__)
 _THINKING_KEY = "thinking"
 _THINKING_TYPE_KEY = "type"
 
-#: How much of a segment to ask for. German is roughly 1.2x the English in characters,
-#: and 2 s of speech is a clause, so this is generous rather than tight.
+#: How much of a segment to ask for. Translations run up to about 1.2x the source in
+#: characters, and 2 s of speech is a clause, so this is generous rather than tight.
 _MAX_OUTPUT_TOKENS = 300
 
-SYSTEM_TEMPLATE = """You translate spoken English into German for live lecture \
-subtitles that a German-speaking audience reads while listening to the speaker.
+SYSTEM_TEMPLATE = """You translate spoken {source} into {target} for live lecture \
+subtitles that {audience} reads while listening to the speaker.
 
 Rules:
-- Output only the German translation. No quotes, no explanations, no commentary, no \
-English, no leading or trailing punctuation that the source did not have.
+- Output only the {target} translation. No quotes, no explanations, no commentary, no \
+{source}, no leading or trailing punctuation that the source did not have.
 - The input is one segment of continuous speech, possibly an unfinished clause. \
 Translate it as faithfully and naturally as you can while keeping it a single \
-coherent piece of German. Never merge it with the previous context.
-- The audience is reading, not studying: prefer the plain, spoken German a lecturer \
+coherent piece of {target}. Never merge it with the previous context.
+- The audience is reading, not studying: prefer the plain, spoken {style} a lecturer \
 would use over literary or bureaucratic wording.
 - Preserve numbers, units, names, acronyms and technical terms exactly. A wrong \
 number is the most damaging error you can make.
-- If a term is listed in the glossary below, use exactly that German term.
+- If a term is listed in the glossary below, use exactly that {target} term.
 - Never answer a question in the input, and never continue the speaker's thought. \
 Translate only what is given.{glossary}"""
-
-#: The Arabic prompt. Frozen exactly like the German one, and distinct from it, so
-#: the two translations never share a cached prefix and cannot contaminate each
-#: other's terminology. DeepSeek's cache only hits on a byte-identical prefix, so a
-#: single shared prompt would be both a correctness and a cost problem.
-SYSTEM_TEMPLATE_AR = """You translate spoken English into Arabic for live lecture \
-subtitles that an Arabic-speaking audience reads while listening to the speaker.
-
-Rules:
-- Output only the Arabic translation. No quotes, no explanations, no commentary, no \
-English, no leading or trailing punctuation that the source did not have.
-- The input is one segment of continuous speech, possibly an unfinished clause. \
-Translate it as faithfully and naturally as you can while keeping it a single \
-coherent piece of Arabic. Never merge it with the previous context.
-- The audience is reading, not studying: prefer the plain, spoken Modern Standard \
-Arabic a lecturer would use over literary or bureaucratic wording.
-- Preserve numbers, units, names, acronyms and technical terms exactly. A wrong \
-number is the most damaging error you can make.
-- If a term is listed in the glossary below, use exactly that Arabic term.
-- Never answer a question in the input, and never continue the speaker's thought. \
-Translate only what is given.{glossary}"""
-
-#: The target languages this adapter can write, and the name used in its prompts.
-SUPPORTED_TARGETS: dict[str, str] = {"de": "German", "ar": "Arabic"}
-
-_TEMPLATES: dict[str, str] = {"de": SYSTEM_TEMPLATE, "ar": SYSTEM_TEMPLATE_AR}
 
 
 def build_system_prompt(
-    glossary: Sequence[str] = (), target_language: str = "de"
+    glossary: Sequence[str] = (), *, source: str, target: str
 ) -> str:
     """The frozen prefix: identical for every call in a session, so the cache can hit.
 
     A glossary is a list of ``source=target`` pairs, or of target terms to prefer. It
     is baked in here rather than passed per call, because the whole point is that this
-    string never changes. The target language is part of the prefix, so German and
-    Arabic get different, independently cached prompts.
+    string never changes. Both languages are part of the prefix, so every pairing gets its
+    own, independently cached prompt, and two targets never share one.
     """
 
-    template = _TEMPLATES.get(target_language)
-    if template is None:
-        raise ValueError(
-            f"unsupported target language {target_language!r}; "
-            f"supported: {', '.join(sorted(SUPPORTED_TARGETS))}"
-        )
-
-    if not glossary:
-        return template.format(glossary="")
-
+    speaks, listens = _pair(source, target)
     lines = "\n".join(f"- {entry}" for entry in glossary)
-    return template.format(glossary=f"\n\nGlossary:\n{lines}")
+    return SYSTEM_TEMPLATE.format(
+        source=speaks.name,
+        target=listens.name,
+        audience=listens.audience,
+        style=listens.style,
+        glossary=f"\n\nGlossary:\n{lines}" if glossary else "",
+    )
+
+
+def _pair(source: str, target: str) -> tuple[Language, Language]:
+    if source == target:
+        raise ValueError(f"cannot translate {source!r} into itself")
+    return language(source), language(target)
 
 
 class OpenAiCompatMt:
@@ -135,7 +113,8 @@ class OpenAiCompatMt:
         temperature: float = 0.0,
         timeout_s: float = 8.0,
         client: Any | None = None,
-        target_language: str = "de",
+        source_language: str,
+        target_language: str,
     ) -> None:
         # Belt and braces on the one setting that breaks realtime use. Startup validation
         # enforces it through the provider registry, but an adapter that silently allowed
@@ -147,11 +126,8 @@ class OpenAiCompatMt:
                 "reasoning adds seconds per segment (see docs/05-providers.md)"
             )
 
-        if target_language not in SUPPORTED_TARGETS:
-            raise ValueError(
-                f"unsupported target language {target_language!r}; "
-                f"supported: {', '.join(sorted(SUPPORTED_TARGETS))}"
-            )
+        # Refused here, before any request, if either language is unknown or they match.
+        speaks, listens = _pair(source_language, target_language)
 
         self.model = model
         self.base_url = base_url
@@ -159,11 +135,16 @@ class OpenAiCompatMt:
         self.thinking = thinking
         self.temperature = temperature
         self.timeout_s = timeout_s
+        self.source_language = source_language
         self.target_language = target_language
-        #: The name of the target language, used in the user message.
-        self.target_name = SUPPORTED_TARGETS[target_language]
+        #: The names used in the user message.
+        self.source_name = speaks.name
+        self.target_name = listens.name
+        self._greeting = speaks.greeting
 
-        self.system_prompt = build_system_prompt(self.glossary, target_language)
+        self.system_prompt = build_system_prompt(
+            self.glossary, source=source_language, target=target_language
+        )
         #: A stable fingerprint of the frozen prefix, so two translators of different
         #: targets are provably distinct and a caller can key a cache by it.
         self.prompt_fingerprint = hashlib.sha256(
@@ -265,7 +246,7 @@ class OpenAiCompatMt:
                     {"role": "system", "content": self.system_prompt},
                     {
                         "role": "user",
-                        "content": f"Translate this into {self.target_name}:\nHello.",
+                        "content": f"Translate this into {self.target_name}:\n{self._greeting}",
                     },
                 ],
                 stream=True,
@@ -338,7 +319,7 @@ class OpenAiCompatMt:
         self._ready = True
 
         # The number that decides whether a provider can serve subtitles at all: a segment
-        # whose first German word takes seconds is unusable however good the German is.
+        # whose first word takes seconds is unusable however good the translation is.
         # Logged without the text, which is potentially sensitive.
         logger.info(
             "translated %d chars, first token in %s ms, %d ms total",

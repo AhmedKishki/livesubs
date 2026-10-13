@@ -108,13 +108,14 @@ PROVIDERS: dict[str, Provider] = {
     "deepgram": Provider(
         name="deepgram",
         env_var="DEEPGRAM_API_KEY",
-        label="Deepgram (streaming ASR, English)",
+        label="Deepgram (streaming speech recognition)",
         role="asr",
         hint="console.deepgram.com -> API Keys",
         options={
             "url": "wss://api.deepgram.com",
             "model": "nova-3",
-            "language": "en",
+            # No `language` here: the recogniser is told the speaker's language from the
+            # session's mode. Set `language` under `options` to override it deliberately.
         },
     ),
     "openai": Provider(
@@ -135,7 +136,7 @@ PROVIDERS: dict[str, Provider] = {
     "deepseek": Provider(
         name="deepseek",
         env_var="DEEPSEEK_API_KEY",
-        label="DeepSeek (translation, English -> German)",
+        label="DeepSeek (translation)",
         role="mt",
         hint="platform.deepseek.com -> API keys",
         options={

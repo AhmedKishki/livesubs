@@ -1,9 +1,14 @@
 """Registry of whole-pipeline approaches.
 
-An *approach* is a complete way of producing subtitles. Today there are two on the
-drawing board: the simulated replay, and the live API pipeline. The ones this
-design anticipates but does not build are local/self-hosted models, a one-call
-speech-translation service, and a hybrid with a repair pass.
+An *approach* is a complete way of producing subtitles. Today there are four: the simulated
+replay, the live pipeline on credential-free adapters, the real translator on a timed
+transcript, and the live API pipeline. The ones this design anticipates but does not build
+are local/self-hosted models, a one-call speech-translation service, and a hybrid with a
+repair pass.
+
+Who is speaking, and which languages listeners can read, is the session's mode
+(``livesubs.languages``), taken from the settings. An approach builds one translator per
+target of the mode, so none of them assumes a language of its own.
 
 The server, the WebSocket layer and the overlay are indifferent to which is
 running, because every approach implements
@@ -194,10 +199,14 @@ def pipeline_config(settings: Settings) -> PipelineConfig:
             trust_provider_endpointing=settings.segmentation.trust_provider_endpointing,
         ),
         ingest=IngestConfig(sample_rate=settings.sample_rate),
-        # The source language and any vocabulary hints belong to the recogniser, so they
-        # come from the provider registry rather than from here: input is English by
-        # design, and the glossary that would fill ``keyterms`` is the M4 item.
-        asr=AsrConfig(sample_rate=settings.sample_rate, channels=settings.channels),
+        # The speaker's language comes from the session's mode. Vocabulary hints belong to
+        # the recogniser and come from the provider registry; the glossary that would fill
+        # ``keyterms`` is on the roadmap.
+        asr=AsrConfig(
+            language=settings.source_language,
+            sample_rate=settings.sample_rate,
+            channels=settings.channels,
+        ),
     )
 
 
@@ -236,18 +245,13 @@ def capture_source(settings: Settings, options: ApproachOptions) -> AudioSource:
 def artefacts(
     settings: Settings,
     source: AudioSource,
-    *,
-    extra_target_codes: tuple[str, ...] = (),
 ) -> tuple[AudioSource, Callable[[object], None] | None]:
     """Wrap a capture source with the session's recording and subtitle files.
 
     Shared by every approach that captures audio, so a change to how a session is archived
     cannot apply to one approach and not another. One stem for every artefact, so the
-    recording and the subtitle files that describe it pair up by name.
-
-    ``extra_target_codes`` adds target-language sidecars beyond the configured one, so an
-    Arabic session writes ``.ar.srt``/``.ar.vtt`` alongside the German files. The English
-    source is written once, by the German stream, so the extra files do not duplicate it.
+    recording and the subtitle files that describe it pair up by name. The subtitle files
+    are the speaker's language and one per target of the session's mode.
     """
 
     from livesubs.audio.archive import ArchivedSource, recording_stem
@@ -262,12 +266,12 @@ def artefacts(
 
     recorder = None
     if settings.write_subtitles:
+        mode = settings.mode
         recorder = SubtitleRecorder(
             directory=settings.artifacts_dir,
             stem=stem,
-            source_code="en",
-            target_code=settings.language,
-            extra_target_codes=extra_target_codes,
+            source_code=mode.source,
+            target_codes=mode.targets,
         )
 
     return source, recorder
@@ -328,25 +332,24 @@ def build_asr(settings: Settings) -> AsrProvider:
         api_key=key,
         url=settings.provider_option(provider.name, "url") or DEFAULT_URL,
         model=settings.provider_option(provider.name, "model") or "nova-3",
-        language=settings.provider_option(provider.name, "language") or "en",
+        # Left to the session's mode unless the deployment overrides it on purpose.
+        language=settings.provider_option(provider.name, "language") or None,
         sample_rate=settings.sample_rate,
         channels=settings.channels,
         keyterms=_glossary(settings),
     )
 
 
-def build_mt(settings: Settings, target_language: str = "de") -> MtProvider:
-    """The translator for whichever provider is active for the MT role.
+def build_mt(settings: Settings, target_language: str) -> MtProvider:
+    """The translator from the speaker's language into ``target_language``.
 
     Any OpenAI-compatible endpoint is accepted, which is what lets a deployment point the
     translator at a model on its own machine. A declared provider must say so with
     ``options.adapter: openai_compat``: without it, the provider is refused rather than
     guessed at, because the cost of guessing is sending text to the wrong wire format.
 
-    ``target_language`` selects the frozen prompt and the target text. It defaults to
-    German, so every existing caller is unchanged; ``"ar"`` builds the same provider and
-    transport with the Arabic prompt, needing no second credential and no global settings
-    mutation.
+    One provider and one credential serve every target. The target selects the frozen
+    prompt and the language of the output, so each pairing is cached on its own.
     """
 
     from livesubs.mt.openai_compat import OpenAiCompatMt
@@ -373,8 +376,30 @@ def build_mt(settings: Settings, target_language: str = "de") -> MtProvider:
         glossary=_glossary(settings),
         thinking=settings.provider_option(provider.name, "thinking"),
         timeout_s=mt_timeout_s(settings),
+        source_language=settings.source_language,
         target_language=target_language,
     )
+
+
+def translators(
+    settings: Settings, *, first_now: bool = True
+) -> dict[str, MtProvider | Callable[[], MtProvider]]:
+    """One translator per target of the session's mode.
+
+    The default language's translator is built now, so a missing key or adapter fails at
+    startup rather than when the first viewer arrives. The others are factories, called
+    only while someone is reading that language, so a language nobody asks for is never
+    constructed or warmed.
+    """
+
+    targets = settings.mode.targets
+    built: dict[str, MtProvider | Callable[[], MtProvider]] = {}
+    for index, target in enumerate(targets):
+        if index == 0 and first_now:
+            built[target] = build_mt(settings, target)
+        else:
+            built[target] = lambda language=target: build_mt(settings, language)
+    return built
 
 
 # --- registrations -------------------------------------------------------------
@@ -399,6 +424,7 @@ def _build_sim(settings: Settings, options: ApproachOptions) -> SegmentPublisher
         script=options.get("script", "default"),
         speed=float(options.get("speed", "1.0")),
         loop=loop,
+        mode=settings.mode,
     )
 
 
@@ -435,18 +461,20 @@ def _build_live_sim(settings: Settings, options: ApproachOptions) -> SegmentPubl
     from livesubs.pipeline import LivePipeline
 
     capture, recorder = artefacts(settings, capture_source(settings, options))
+    mode = settings.mode
 
     return LivePipeline(
         source=capture,
         asr=StubAsr(),
-        mt=PassthroughMt(),
+        translators={target: PassthroughMt() for target in mode.targets},
+        source_language=mode.source,
         config=pipeline_config(settings),
         on_segment=recorder,
     )
 
 
 def _build_live(settings: Settings, options: ApproachOptions) -> SegmentPublisher:
-    """The pipeline this repository exists for: speech to English to German to a screen.
+    """The pipeline this repository exists for: speech to text to a translation on a screen.
 
     Nothing is stubbed. Both adapters are chosen from the provider chain the config file
     declares, so switching vendors is a config change, and an unusable chain raises here
@@ -455,27 +483,21 @@ def _build_live(settings: Settings, options: ApproachOptions) -> SegmentPublishe
 
     from livesubs.pipeline import LivePipeline
 
-    capture, recorder = artefacts(
-        settings, capture_source(settings, options), extra_target_codes=("ar",)
-    )
+    capture, recorder = artefacts(settings, capture_source(settings, options))
 
     # The providers are constructed here so a missing key or adapter still fails at
     # startup rather than when the first viewer arrives. The audience gate means they
-    # are opened (and the translator warmed) only once a viewer connects, and the
+    # are opened (and the translators warmed) only once a viewer connects, and the
     # factory builds a fresh recogniser for each later audience session so no closed
-    # adapter's send queue is replayed.
-    initial_asr = build_asr(settings)
-    initial_mt = build_mt(settings)
-
+    # adapter's send queue is replayed. Only the default language's translator is built
+    # now; the others share its provider and credential and are built when somebody
+    # asks for their language.
     return LivePipeline(
         source=capture,
-        asr=initial_asr,
+        asr=build_asr(settings),
         asr_factory=lambda: build_asr(settings),
-        mt=initial_mt,
-        # The Arabic translator is built lazily, only while an Arabic viewer is present,
-        # and shares the German provider and credential. No Arabic provider is
-        # constructed or warmed for a German-only lecture.
-        mt_ar_factory=lambda: build_mt(settings, "ar"),
+        translators=translators(settings),
+        source_language=settings.source_language,
         config=pipeline_config(settings),
         on_segment=recorder,
         require_audience=True,
@@ -486,9 +508,10 @@ def _build_live_text(settings: Settings, options: ApproachOptions) -> SegmentPub
     """The real translator, with the words supplied as a timed transcript.
 
     This is how the translation half of the pipeline is evaluated on its own, and how a
-    deployment can watch the overlay and the German before it has an ASR key. The words come
-    from ``--cues``, so they are whatever that file says: it is a rehearsal of everything
-    except acoustic recognition, and it is named so that nobody forgets which half is real.
+    deployment can watch the overlay and the translation before it has an ASR key. The
+    words come from ``--cues``, so they are whatever that file says: it is a rehearsal of
+    everything except acoustic recognition, and it is named so that nobody forgets which
+    half is real.
     """
 
     from livesubs.asr.transcript import TranscriptAsr
@@ -507,9 +530,7 @@ def _build_live_text(settings: Settings, options: ApproachOptions) -> SegmentPub
     if not cues:
         raise ValueError(f"{cues_path} contains no cues")
 
-    capture, recorder = artefacts(
-        settings, capture_source(settings, options), extra_target_codes=("ar",)
-    )
+    capture, recorder = artefacts(settings, capture_source(settings, options))
 
     # The translator is billed, so this approach is gated like ``live``. The
     # transcript input is rebuilt per audience session and realigned to the running
@@ -518,14 +539,13 @@ def _build_live_text(settings: Settings, options: ApproachOptions) -> SegmentPub
         source=capture,
         asr=TranscriptAsr(cues),
         asr_factory=lambda: TranscriptAsr(cues),
-        mt=build_mt(settings),
-        # Arabic is opt-in and shares the German provider; it is built only while an
-        # Arabic viewer is present.
-        mt_ar_factory=lambda: build_mt(settings, "ar"),
+        translators=translators(settings),
+        source_language=settings.source_language,
         config=pipeline_config(settings),
         on_segment=recorder,
         require_audience=True,
     )
+
 
 
 register(
@@ -561,7 +581,7 @@ register(
         summary=(
             "The real capture, segmentation, translation and delivery path, with the words "
             "read from a timed transcript instead of recognised from the audio. Use it to "
-            "evaluate the German and the overlay without an ASR key; --cues PATH is required."
+            "evaluate the translation and the overlay without an ASR key; --cues PATH is required."
         ),
         build=_build_live_text,
         #: A translator and no recogniser, so demanding an ASR key for this approach would

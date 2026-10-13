@@ -25,27 +25,38 @@ from livesubs.events import SegmentState, SubtitleSegment, Timing
 from livesubs.hub import Hub
 from livesubs.server import create_app
 
+LINES = {
+    "de": "Hallo zusammen.",
+    "en": "Hello everyone.",
+    "ar": "مرحبا بالجميع.",
+}
+
 
 class OneLinePublisher:
-    """Publishes one German line with its English source, then waits."""
+    """Publishes one line in each language it declares, with the speaker's words, then waits."""
+
+    def __init__(self, *languages: str) -> None:
+        self.supported_languages = languages or ("de",)
 
     async def run(self, hub: Hub, *, session_id: str, stop: asyncio.Event) -> None:
-        hub.publish_segment(
-            SubtitleSegment(
-                seq=0,
-                rev=0,
-                state=SegmentState.FINAL,
-                de="Hallo zusammen.",
-                src="Hello everyone.",
-                timing=Timing(audio_ms=1000, emit_ms=1400),
+        for language in self.supported_languages:
+            hub.publish_segment(
+                SubtitleSegment(
+                    seq=0,
+                    rev=0,
+                    state=SegmentState.FINAL,
+                    language=language,
+                    text=LINES[language],
+                    src="the speaker's own words",
+                    timing=Timing(audio_ms=1000, emit_ms=1400),
+                )
             )
-        )
         await stop.wait()
 
 
 @asynccontextmanager
-async def serving(publisher) -> AsyncIterator[str]:
-    app = create_app(Settings(_env_file=None), publisher)
+async def serving(publisher, speaker: str = "en") -> AsyncIterator[str]:
+    app = create_app(Settings(_env_file=None, session={"speaker": speaker}), publisher)
     server = uvicorn.Server(
         uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning", lifespan="on")
     )
@@ -78,21 +89,37 @@ async def messages_of(url: str, count: int) -> list[dict]:
         return [json.loads(await asyncio.wait_for(ws.recv(), timeout=5)) for _ in range(count)]
 
 
+#: ``(speaker, default language, the optional second language)``.
+MODES = [("en", "de", "ar"), ("de", "en", "ar")]
+MODE_IDS = ["english-speaker", "german-speaker"]
+
+
 async def test_an_unknown_session_is_refused_with_a_code_the_client_receives() -> None:
     async with serving(OneLinePublisher()) as base:
         assert await close_code_of(f"{base}/ws/nope") == 4404
 
 
-async def test_an_unsupported_language_is_refused_with_a_code_the_client_receives() -> None:
+@pytest.mark.parametrize(("speaker", "default", "optional"), MODES, ids=MODE_IDS)
+async def test_a_language_the_publisher_cannot_produce_is_refused_with_a_code_the_client_receives(
+    speaker: str, default: str, optional: str
+) -> None:
     """The viewer stops retrying only if this code reaches it."""
 
-    async with serving(OneLinePublisher()) as base:
-        assert await close_code_of(f"{base}/ws/demo?role=viewer_ar") == 4403
+    async with serving(OneLinePublisher(default), speaker) as base:
+        assert await close_code_of(f"{base}/ws/demo?role=viewer_{optional}") == 4403
 
 
-async def test_a_refused_socket_creates_no_demand() -> None:
-    async with serving(OneLinePublisher()) as base:
-        await close_code_of(f"{base}/ws/demo?role=viewer_ar")
+async def test_the_speakers_own_language_is_never_offered_as_a_subtitle() -> None:
+    async with serving(OneLinePublisher("de", "ar"), "en") as base:
+        assert await close_code_of(f"{base}/ws/demo?role=viewer_en") == 4403
+
+
+@pytest.mark.parametrize(("speaker", "default", "optional"), MODES, ids=MODE_IDS)
+async def test_a_refused_socket_creates_no_demand(
+    speaker: str, default: str, optional: str
+) -> None:
+    async with serving(OneLinePublisher(default), speaker) as base:
+        await close_code_of(f"{base}/ws/demo?role=viewer_{optional}")
         await asyncio.sleep(0.05)
         # Asked over the same server, with an async client: a blocking call would stall
         # the loop that is also running the server.
@@ -102,13 +129,47 @@ async def test_a_refused_socket_creates_no_demand() -> None:
         assert payload["connections"] == 0
 
 
-async def test_a_viewer_gets_the_line_without_the_source() -> None:
-    async with serving(OneLinePublisher()) as base:
+@pytest.mark.parametrize(("speaker", "default", "optional"), MODES, ids=MODE_IDS)
+async def test_a_plain_viewer_gets_the_default_language_without_the_source(
+    speaker: str, default: str, optional: str
+) -> None:
+    async with serving(OneLinePublisher(default, optional), speaker) as base:
         messages = await messages_of(f"{base}/ws/demo", 3)
 
     assert [m["type"] for m in messages] == ["hello", "status", "segment"]
-    assert messages[2]["data"]["de"] == "Hallo zusammen."
+    assert messages[0]["data"]["source"] == speaker
+    assert messages[0]["data"]["targets"] == [default, optional]
+    assert messages[0]["data"]["language"] == default
+    assert messages[2]["data"]["language"] == default
+    assert messages[2]["data"]["text"] == LINES[default]
     assert messages[2]["data"]["src"] is None
+
+
+@pytest.mark.parametrize(("speaker", "default", "optional"), MODES, ids=MODE_IDS)
+async def test_the_optional_language_reaches_only_a_viewer_who_asked_for_it(
+    speaker: str, default: str, optional: str
+) -> None:
+    async with serving(OneLinePublisher(default, optional), speaker) as base:
+        asked = await messages_of(f"{base}/ws/demo?role=viewer_{optional}", 3)
+        async with websockets.connect(f"{base}/ws/demo", open_timeout=5) as plain:
+            # A plain viewer sees its own language and nothing of the other one, however
+            # long it listens.
+            seen = [json.loads(await asyncio.wait_for(plain.recv(), timeout=5)) for _ in range(3)]
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(plain.recv(), timeout=0.3)
+
+    assert asked[0]["data"]["language"] == optional
+    assert asked[2]["data"]["language"] == optional
+    assert asked[2]["data"]["text"] == LINES[optional]
+    assert asked[2]["data"]["src"] is None
+    assert {m["data"]["language"] for m in seen if m["type"] == "segment"} == {default}
+
+
+async def test_a_mistyped_role_is_a_plain_viewer_and_never_widens_what_is_received() -> None:
+    async with serving(OneLinePublisher("de", "ar")) as base:
+        messages = await messages_of(f"{base}/ws/demo?role=viewer_AR", 3)
+
+    assert messages[2]["data"]["language"] == "de"
 
 
 async def test_a_heartbeat_reaches_an_idle_viewer(monkeypatch: pytest.MonkeyPatch) -> None:

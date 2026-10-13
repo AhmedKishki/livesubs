@@ -27,7 +27,8 @@ def segment(seq: int) -> SegmentMessage:
             seq=seq,
             rev=0,
             state=SegmentState.FINAL,
-            de=f"Zeile {seq}",
+            language="de",
+            text=f"Zeile {seq}",
             timing=Timing(audio_ms=seq, emit_ms=seq),
         )
     )
@@ -50,8 +51,8 @@ async def test_a_message_landing_on_the_heartbeat_deadline_is_still_sent(
 
     monkeypatch.setattr(websocket_routes, "HEARTBEAT_INTERVAL_S", 0.01)
 
-    hub = Hub()
-    subscriber = hub.subscribe(ClientRole.VIEWER)
+    hub = Hub(("de",))
+    subscriber = hub.subscribe(ClientRole.viewer("de"))
     socket = RecordingSocket()
     offered: list[int] = []
     real_move_on_after = anyio.move_on_after

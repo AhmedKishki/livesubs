@@ -1,7 +1,7 @@
 """Run a live session with the audio playing alongside it, in sync.
 
 A rehearsal has three parts that have to happen at once: the pipeline reading its audio in
-real time, the same audio audible to the room, and a phone showing the German. Doing that by
+real time, the same audio audible to the room, and a phone showing the subtitles. Doing that by
 hand needs a stopwatch, because the two sides start counting from different moments.
 
 They do not have to. ``LivePipeline.run`` warms the translator and opens the recogniser
@@ -164,6 +164,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", default="8000")
     parser.add_argument("--session-id", default=None)
     parser.add_argument(
+        "--speaker",
+        default=None,
+        help="the language the audio is in, en or de; the configured speaker when omitted",
+    )
+    parser.add_argument(
         "--player",
         default=None,
         help="command template with {file}; default picks gst-play, pw-play or aplay",
@@ -200,6 +205,8 @@ def main(argv: list[str] | None = None) -> int:
         server_command += ["--cues", args.cues]
     if args.session_id:
         server_command += ["--session-id", args.session_id]
+    if args.speaker:
+        server_command += ["--speaker", args.speaker]
 
     print(f"starting   : {' '.join(shlex.quote(part) for part in server_command[2:])}")
     print(f"listening  : {args.host}:{args.port}  (open the landing page printed below and scan)")

@@ -1,7 +1,7 @@
 """Streaming speech recognition from Deepgram.
 
 The adapter that turns the pipeline from a demonstration into the product. Everything
-else already works; this is the stage that produces real English from real audio.
+else already works; this is the stage that produces real text from real audio.
 
 Transport is ``websockets`` directly rather than the vendor's SDK, because the design rule
 in ``docs/04-adapters.md`` is that the adapter owns its transport and that no vendor type
@@ -81,7 +81,7 @@ class DeepgramAsr:
         api_key: str,
         url: str = DEFAULT_URL,
         model: str = "nova-3",
-        language: str = "en",
+        language: str | None = None,
         sample_rate: int = 16_000,
         channels: int = 1,
         endpointing_ms: int | None = None,
@@ -97,6 +97,8 @@ class DeepgramAsr:
         self.api_key = api_key
         self.url = url.rstrip("/")
         self.model = model
+        #: An explicit override. Left unset, the stream is opened for the language the
+        #: session's mode says the speaker uses, which arrives in the ``AsrConfig``.
         self.language = language
         self.sample_rate = sample_rate
         self.channels = channels

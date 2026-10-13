@@ -1,4 +1,4 @@
-"""Live English-to-German lecture subtitles."""
+"""Live translated lecture subtitles."""
 
 from livesubs.events import EVENT_VERSION
 

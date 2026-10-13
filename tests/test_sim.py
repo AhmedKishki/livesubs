@@ -14,14 +14,20 @@ from livesubs.approaches import build_approach
 from livesubs.config import Settings
 from livesubs.events import HelloMessage, SegmentMessage, StatusMessage
 from livesubs.hub import ClientRole, Hub, SegmentPublisher
+from livesubs.languages import mode_for
 from livesubs.segmenter import hold_ms
 from livesubs.sim import SCRIPTS, SimPublisher, replay
+
+#: One target language, so that a segment is a draft and a final and nothing else. The
+#: tests that are about several languages say so.
+GERMAN_ONLY = mode_for("en", ["de"])
+VIEWER = ClientRole.viewer("de")
 
 
 async def test_replay_sequence_is_deterministic() -> None:
     """speed=0 runs flat out, making the whole frame sequence observable."""
 
-    messages = [message async for message in replay("default", speed=0)]
+    messages = [message async for message in replay("default", mode=GERMAN_ONLY, speed=0)]
 
     assert messages[0].type == "hello"
     assert messages[1].type == "status"
@@ -41,7 +47,7 @@ async def test_replay_sequence_is_deterministic() -> None:
 async def test_every_script_segment_is_emitted_as_draft_then_final() -> None:
     script = "default"
     count = len(SCRIPTS[script].segments)
-    messages = [message async for message in replay(script, speed=0)]
+    messages = [message async for message in replay(script, mode=GERMAN_ONLY, speed=0)]
     segments = [m.data for m in messages if isinstance(m, SegmentMessage)]
 
     assert len(segments) == 2 * count
@@ -56,13 +62,13 @@ async def test_every_script_segment_is_emitted_as_draft_then_final() -> None:
 async def test_revisions_rewrite_rather_than_append() -> None:
     """The hard case for the overlay, so it must be present in the fixture."""
 
-    messages = [message async for message in replay("default", speed=0)]
+    messages = [message async for message in replay("default", mode=GERMAN_ONLY, speed=0)]
     segments = [m.data for m in messages if isinstance(m, SegmentMessage)]
 
     revised = [
-        (segments[i].de, segments[i + 1].de)
+        (segments[i].text, segments[i + 1].text)
         for i in range(0, len(segments), 2)
-        if segments[i].de != segments[i + 1].de
+        if segments[i].text != segments[i + 1].text
     ]
     assert revised, "at least one revision must actually change the text"
 
@@ -75,7 +81,7 @@ async def test_fast_speaker_genuinely_outruns_reading_speed() -> None:
     """
 
     script = SCRIPTS["fast_speaker"]
-    longest = max(len(segment.de_final) for segment in script.segments)
+    longest = max(len(segment.final["de"]) for segment in script.segments)
 
     assert script.cadence_ms < hold_ms(longest) * 0.6
     assert script.cadence_ms < SCRIPTS["default"].cadence_ms
@@ -112,7 +118,7 @@ def test_sim_publisher_satisfies_the_publisher_protocol() -> None:
 
 async def test_sim_publisher_feeds_the_hub_and_terminates() -> None:
     hub = Hub()
-    subscriber = hub.subscribe(ClientRole.VIEWER)
+    subscriber = hub.subscribe(VIEWER)
     seen: list[str] = []
 
     async def collect() -> None:
@@ -127,7 +133,7 @@ async def test_sim_publisher_feeds_the_hub_and_terminates() -> None:
 
     collector = asyncio.create_task(collect())
 
-    await SimPublisher(script="default", speed=0).run(
+    await SimPublisher(script="default", speed=0, mode=GERMAN_ONLY).run(
         hub, session_id="test", stop=asyncio.Event()
     )
     await asyncio.wait_for(collector, timeout=2.0)
@@ -141,9 +147,9 @@ async def test_viewer_never_sees_the_source_through_the_hub() -> None:
     """Same guarantee as the hub tests, exercised via the sim path."""
 
     hub = Hub()
-    subscriber = hub.subscribe(ClientRole.VIEWER)
+    subscriber = hub.subscribe(VIEWER)
 
-    await SimPublisher(script="default", speed=0).run(
+    await SimPublisher(script="default", speed=0, mode=GERMAN_ONLY).run(
         hub, session_id="test", stop=asyncio.Event()
     )
 
@@ -226,7 +232,9 @@ async def test_a_looping_replay_never_reports_a_terminal_status() -> None:
 
     frames = len(SCRIPTS["default"].segments) * 2       # a draft and a revision each
 
-    messages = await _take_frames(replay("default", speed=0, loop=True), _frames_for(frames * 3))
+    messages = await _take_frames(
+        replay("default", mode=GERMAN_ONLY, speed=0, loop=True), _frames_for(frames * 3)
+    )
 
     statuses = [m.data for m in messages if m.type == "status"]
     assert statuses, "the viewer must be told the session is live"
@@ -236,11 +244,13 @@ async def test_a_looping_replay_never_reports_a_terminal_status() -> None:
 async def test_a_looping_replay_repeats_its_content() -> None:
     frames = len(SCRIPTS["default"].segments) * 2
 
-    messages = await _take_frames(replay("default", speed=0, loop=True), _frames_for(frames + 1))
+    messages = await _take_frames(
+        replay("default", mode=GERMAN_ONLY, speed=0, loop=True), _frames_for(frames + 1)
+    )
 
     segments = [m.data for m in messages if isinstance(m, SegmentMessage)]
     first_pass, second_pass = segments[0], segments[frames]
-    assert second_pass.de == first_pass.de
+    assert second_pass.text == first_pass.text
 
 
 async def test_a_looping_replay_keeps_the_sequence_rising() -> None:
@@ -250,7 +260,9 @@ async def test_a_looping_replay_keeps_the_sequence_rising() -> None:
     lines = len(SCRIPTS["default"].segments)      # one sequence number per line
     frames = lines * 2                            # a draft and a revision per line
 
-    messages = await _take_frames(replay("default", speed=0, loop=True), _frames_for(frames * 2))
+    messages = await _take_frames(
+        replay("default", mode=GERMAN_ONLY, speed=0, loop=True), _frames_for(frames * 2)
+    )
 
     segments = [m.data for m in messages if isinstance(m, SegmentMessage)]
     assert len(segments) == frames * 2
@@ -273,9 +285,9 @@ async def test_a_viewer_watching_across_a_pass_boundary_sees_both_passes() -> No
     lines = len(SCRIPTS["default"].segments)      # one sequence number per line
 
     hub = Hub()
-    subscriber = hub.subscribe(ClientRole.VIEWER)
+    subscriber = hub.subscribe(VIEWER)
     stop = asyncio.Event()
-    publisher = SimPublisher(script="default", speed=0, loop=True)
+    publisher = SimPublisher(script="default", speed=0, loop=True, mode=GERMAN_ONLY)
     task = asyncio.create_task(publisher.run(hub, session_id="test", stop=stop))
 
     seqs: list[int] = []
@@ -305,3 +317,76 @@ def test_serving_the_simulation_loops_by_default() -> None:
     once = build_approach("sim", settings, {"loop": "false"})
     assert isinstance(once, SimPublisher)
     assert not once.loop
+
+
+# --- who is speaking ---------------------------------------------------------------------
+
+
+async def test_an_english_speaker_has_german_and_arabic_streams() -> None:
+    messages = [m async for m in replay("default", mode=mode_for("en"), speed=0)]
+    segments = [m.data for m in messages if isinstance(m, SegmentMessage)]
+    hello = messages[0].data
+
+    assert (hello.source, hello.targets) == ("en", ["de", "ar"])
+    assert {s.language for s in segments} == {"de", "ar"}
+    first = [s for s in segments if s.seq == 0 and s.state == "final"]
+    assert {s.language: s.text for s in first}["de"] == "Heute betrachten wir gedämpfte Schwingungen."
+    assert all(s.src == "Today we will look at damped oscillations." for s in first)
+
+
+async def test_a_german_speaker_has_english_and_arabic_streams() -> None:
+    messages = [m async for m in replay("default", mode=mode_for("de"), speed=0)]
+    segments = [m.data for m in messages if isinstance(m, SegmentMessage)]
+    hello = messages[0].data
+
+    assert (hello.source, hello.targets) == ("de", ["en", "ar"])
+    assert {s.language for s in segments} == {"en", "ar"}
+    first = {s.language: s for s in segments if s.seq == 0 and s.state == "final"}
+    assert first["en"].text == "Today we will look at damped oscillations."
+    assert first["en"].src == "Heute betrachten wir gedämpfte Schwingungen."
+
+
+async def test_every_target_has_a_draft_and_a_final_for_every_line() -> None:
+    mode = mode_for("de")
+    messages = [m async for m in replay("default", mode=mode, speed=0)]
+    segments = [m.data for m in messages if isinstance(m, SegmentMessage)]
+    lines = len(SCRIPTS["default"].segments)
+
+    for language in mode.targets:
+        mine = [s for s in segments if s.language == language]
+        assert len(mine) == 2 * lines
+        assert [(s.seq, s.rev) for s in mine] == [(n, r) for n in range(lines) for r in (0, 1)]
+
+
+def test_every_line_of_every_script_exists_in_every_language() -> None:
+    """A mode must never meet a line it cannot show."""
+
+    for name, script in SCRIPTS.items():
+        for segment in script.segments:
+            assert set(segment.final) >= {"en", "de", "ar"}, name
+
+
+def test_the_publisher_declares_the_languages_it_can_produce() -> None:
+    assert SimPublisher(mode=mode_for("en")).supported_languages == ("de", "ar")
+    assert SimPublisher(mode=mode_for("de")).supported_languages == ("en", "ar")
+    assert SimPublisher(mode=GERMAN_ONLY).supported_languages == ("de",)
+
+
+async def test_a_sessions_own_announcement_is_not_overwritten_by_the_replays() -> None:
+    from livesubs.events import HelloPayload
+
+    hub = Hub()
+    hub.publish(
+        HelloMessage(
+            data=HelloPayload(
+                session_id="lecture", session_name="Physik I", source="en", targets=["de"]
+            )
+        )
+    )
+
+    await SimPublisher(script="default", speed=0, mode=GERMAN_ONLY).run(
+        hub, session_id="lecture", stop=asyncio.Event()
+    )
+
+    assert hub.latest_hello is not None
+    assert hub.latest_hello.session_name == "Physik I"

@@ -15,10 +15,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 
 from livesubs.events import HelloMessage, HelloPayload, PipelineStatus
 from livesubs.hub import Hub, SegmentPublisher
+from livesubs.languages import Mode
 
 __all__ = ["Session", "SessionRegistry"]
 
@@ -34,20 +35,20 @@ class Session:
         id: str,
         name: str,
         publisher: SegmentPublisher,
-        language: str = "de",
-        languages: Sequence[str] | None = None,
+        mode: Mode,
         on_failure: Callable[[], None] | None = None,
     ) -> None:
         self.id = id
         self.name = name
-        self.language = language
-        #: The target languages this session can actually produce. A viewer that asks
-        #: for a language not in this list is refused at the socket rather than being
-        #: allowed to create demand for text that will never arrive.
-        self.languages: tuple[str, ...] = (
-            tuple(languages) if languages is not None else (language,)
-        )
-        self.hub = Hub()
+        self.mode = mode
+        #: The language the speaker uses.
+        self.source = mode.source
+        #: The target languages this session can actually produce, default first. The mode
+        #: says what is possible; the publisher says what it can do. A viewer that asks for
+        #: a language outside this list is refused at the socket rather than being allowed
+        #: to create demand for text that will never arrive.
+        self.targets = _targets(mode, publisher)
+        self.hub = Hub(self.targets)
         self.publisher = publisher
         #: Called when the publisher dies with an exception. A service uses it to exit, so
         #: its supervisor restarts the process: a server that is up but whose pipeline is
@@ -59,6 +60,12 @@ class Session:
         self.stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._started_at = time.monotonic()
+
+    @property
+    def default_language(self) -> str:
+        """What a plain QR scan reaches."""
+
+        return self.targets[0]
 
     @property
     def running(self) -> bool:
@@ -84,7 +91,8 @@ class Session:
                 data=HelloPayload(
                     session_id=self.id,
                     session_name=self.name,
-                    language=self.language,
+                    source=self.source,
+                    targets=list(self.targets),
                 )
             )
         )
@@ -126,6 +134,25 @@ class Session:
             logger.exception("publisher for session %s errored during shutdown", self.id)
 
         self._task = None
+
+
+def _targets(mode: Mode, publisher: SegmentPublisher) -> tuple[str, ...]:
+    """The mode's targets that the publisher can produce, in the mode's order.
+
+    A publisher that does not say what it can produce is offered the mode's default
+    language only: the safe reading is that it can do one thing.
+    """
+
+    declared = getattr(publisher, "supported_languages", None)
+    if declared is None:
+        return (mode.default_target,)
+    offered = tuple(code for code in mode.targets if code in declared)
+    if not offered:
+        raise ValueError(
+            f"the publisher produces {', '.join(declared) or 'nothing'}, but a "
+            f"{mode.source!r} speaker is offered {', '.join(mode.targets)}"
+        )
+    return offered
 
 
 class SessionRegistry:

@@ -2,7 +2,7 @@
 
 Defined in ``docs/04-adapters.md`` and ``docs/05-providers.md``.
 
-Streaming is REQUIRED, not optional: the first German words must reach the screen
+Streaming is REQUIRED, not optional: the first translated words must reach the screen
 before the sentence finishes, which is one of the three techniques that make the
 pipeline feel instant.
 """
@@ -30,9 +30,10 @@ class MtError(RuntimeError):
 class MtContext:
     """Context carried alongside a segment to be translated.
 
-    ``source_context`` exists because German is verb-final: translating an
-    isolated English fragment produces grammatically wrong German. Previous
-    source sentences let the model resolve word order and pronoun gender.
+    ``source_context`` exists because translating an isolated fragment goes wrong in
+    ways the next clause would have prevented, above all into a language such as German
+    that places its verb last. Previous source sentences let the model resolve word order
+    and pronoun gender.
 
     IMPORTANT: context goes in the USER message, never the system prompt.
     DeepSeek's on-disk context cache only hits on a stable prefix, so putting
@@ -41,7 +42,7 @@ class MtContext:
     """
 
     source_context: list[str] = field(default_factory=list)
-    #: Previous German output, for terminology consistency across a lecture.
+    #: Previous output in the target language, for terminology consistency across a lecture.
     target_context: list[str] = field(default_factory=list)
 
 
@@ -55,7 +56,7 @@ class MtChunk:
 
 @runtime_checkable
 class MtProvider(Protocol):
-    """A streaming English-to-German translator."""
+    """A streaming translator from the speaker's language into one target language."""
 
     async def warm(self) -> None:
         """Build the provider's cache BEFORE the lecture starts.
