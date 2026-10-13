@@ -116,6 +116,16 @@ sudo ufw allow 8000/tcp comment 'livesubs'
 - The server raises its open-file limit to 16,384 at startup when the hard limit allows it, and warns when it cannot reach 4,096. Every phone is an open file, and the usual default of 1,024 would refuse phone number 1,000.
 - Not measured: the room's WiFi, which is the likelier limit in a hall, TLS, a slower processor than the test laptop, and a generator on another machine. Check the figures on the real hardware with `tools/load_test.py --host SERVER_ADDRESS` from another computer, and read the operator console's event-loop lateness and open-file figures during the lecture.
 
+### Network
+
+- Measured with the same setup, a phone received 2.0 messages per second of about 250 bytes each, which is 500 B/s or about 4 kbit/s of payload, with 20% of phones reading Arabic. Adding WebSocket, TCP and IP headers, and the phone's acknowledgements of each final line and each packet, a phone costs about 5 kbit/s downstream and 1.5 kbit/s upstream.
+- The server's link therefore carries about 5 Mbit/s for 1,000 phones and 12 Mbit/s for 2,500. A wired gigabit port is not the limit, so connect the server by Ethernet.
+- With 2,000 phones connecting within 0.2 s, as after a WiFi blip, every phone connected. The median connect took 560 ms and the 95th percentile 1.5 s, while the server's core was saturated for those seconds.
+- A phone that goes offline misses the lines published meanwhile. On reconnect it receives the current status and the current line, then follows live. It retries after 0.5 s and doubles the wait up to 10 s, with no random spread, so phones that lost the network together retry together.
+- A phone that cannot keep up skips lines and never slows another phone. The server drops a connection that has been silent for 30 s.
+- Not measured: the room's WiFi. Its limit is airtime, not bandwidth, because every message is a small frame to each phone and an acknowledgement back. This is an estimate from assumed frame costs, not a measurement: at 0.3 ms of airtime per exchange, 2 messages per second use 0.1% to 0.2% of a radio per phone, so one radio saturates at roughly 300 to 500 phones, and phones with a weak signal use several times more airtime each. Plan on 100 to 150 phones per access point radio until the room has been measured.
+- The address pool is the next limit: a /24 network offers about 250 addresses. Access points also have their own client limits, and client isolation blocks the phone-to-server path altogether (see [07-delivery-qr](07-delivery-qr.md)).
+
 ## Failure behaviour
 
 - An exception escaping the publisher sets the session to `stopped` with the generic detail `publisher failed`.

@@ -2,7 +2,9 @@
 
 ## Operator console and visibility
 
+- Spread viewer reconnect delays randomly, so phones that lost the network together do not retry together.
 - Make the draft interval a setting, so an operator can trade subtitle smoothness for a lower message rate on a crowded network.
+- Offer a final-only delivery mode, which would cut the message rate per phone to about a quarter for a crowded network.
 - Keep figures over time. The console shows the last 256 samples of each timing and the current counters, and keeps no history of a lecture.
 - Implement clock alignment before reporting end-to-end latency percentiles. `rendered_in_ms` measures only client-side handling, and `timing.render_ms` is unused.
 - Add session start, stop and restart controls, with re-warming after a glossary change.
