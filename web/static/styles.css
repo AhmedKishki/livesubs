@@ -253,15 +253,26 @@ body {
 
 /* The language picker is the one native control in the panel. It keeps the
  * panel's dark surface and inherits the page direction, so a right-to-left page
- * lays the picker out right-to-left without extra rules. */
+ * lays the picker out right-to-left without extra rules.
+ *
+ * The fill is opaque on purpose. The open list is drawn by the browser on its own
+ * surface, and a translucent fill there is white, so the white text was unreadable
+ * against it. The options carry the same colours for the browsers that paint them
+ * separately, and `color-scheme` makes the list use dark system colours. */
 .controls-panel .language-select {
   width: 100%;
   padding: 0.3em 0.4em;
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.25);
-  background: rgba(255, 255, 255, 0.1);
+  background: #1c1f24;
   color: #fff;
+  color-scheme: dark;
   font: inherit;
+}
+
+.controls-panel .language-select option {
+  background: #1c1f24;
+  color: #fff;
 }
 
 /* --- static pages (landing and operator console) --------------------------- */
