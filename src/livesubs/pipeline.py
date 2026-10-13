@@ -56,6 +56,7 @@ from livesubs.hub import Hub
 from livesubs.ingest import FrameStats, Ingest, IngestConfig
 from livesubs.mt.base import MtContext, MtProvider
 from livesubs.segmenter import Decision, SegmentBuffer, SegmenterConfig
+from livesubs.transcript import TranscriptAssembler
 
 __all__ = ["Committed", "LivePipeline", "PipelineConfig"]
 
@@ -208,7 +209,8 @@ class LivePipeline:
         self._stop: asyncio.Event | None = None
         self._t0 = 0.0
         self._audio_ms = 0
-        self._src = ""
+        #: The recogniser's text that has not been sent to translation yet.
+        self._assembler = TranscriptAssembler()
         self._speech_final = False
         self._seq = 0
         self._lagging = False
@@ -369,7 +371,7 @@ class LivePipeline:
                     # closes, "a frame stale" means committing that segment with the
                     # previous partial's text instead of the provider's final one.
                     await asyncio.sleep(0)
-                    self._drain_events()
+                    activity = self._drain_events()
 
                     if awaiting_resume:
                         # No speech run is open: either the session has just started, or a
@@ -384,38 +386,48 @@ class LivePipeline:
                         # END of the frame that first carried speech, so using it would put
                         # every cue one frame (20 ms) late. Small, and exactly the kind of
                         # offset that makes a video overlay look subtly out of sync.
+                        #
+                        # Speech is the VAD hearing it OR the recogniser producing text. A
+                        # voice below the VAD threshold is still recognised, and a run that
+                        # only the VAD could open left that voice without subtitles while
+                        # the recogniser billed on.
+                        opens = stats.speech or self._assembler.pending
                         buffer.reset(frame.start_ms if stats.speech else stats.now_ms)
-                        awaiting_resume = not stats.speech
+                        awaiting_resume = not opens
 
                     decision = buffer.observe(
                         stats.now_ms,
                         voice=stats.speech,
                         speech_final=self._speech_final,
+                        activity=activity,
                     )
                     self._speech_final = False
 
                     if decision is Decision.EMIT:
-                        if self._src:
+                        # What the recogniser has said that has not been sent yet. Taken from
+                        # the assembler, not from the newest event: that event describes the
+                        # recogniser's chunk, not this segment.
+                        text = self._assembler.commit()
+                        if text.strip():
                             # The span is taken from the buffer rather than from the
                             # current frame: speech began at `started_ms` and stopped at
-                            # `last_voice_ms`, and the gap since then is the pause that
-                            # closed the segment. A cue covering the pause too would sit
-                            # on screen through the one moment a viewer looks up.
+                            # `end_ms`, and the gap since then is the pause that closed the
+                            # segment. A cue covering the pause too would sit on screen
+                            # through the one moment a viewer looks up.
                             #
                             # One committed source segment is handed to every active
                             # target, each of which assigns and translates independently.
                             self._dispatch(
                                 (
                                     self._seq,
-                                    self._src,
+                                    text,
                                     buffer.started_ms,
-                                    max(buffer.last_voice_ms, buffer.started_ms),
+                                    max(buffer.end_ms, buffer.started_ms),
                                 )
                             )
                             self._seq += 1
                         # The clock resets even for an empty run, so the next segment
                         # starts when speech resumes rather than when this one ended.
-                        self._src = ""
                         buffer.reset(stats.now_ms)
                         awaiting_resume = True
                         self._check_lag()
@@ -424,7 +436,7 @@ class LivePipeline:
                     # segmenter closed, so the next line begins with the speech that
                     # follows the audience's return rather than with stale audio.
                     awaiting_resume = True
-                    self._src = ""
+                    self._assembler.reset()
                     self._speech_final = False
                     self._inbox.clear()
 
@@ -872,7 +884,8 @@ class LivePipeline:
         self._finals.clear()
         self._drain_signal()
         self._inbox.clear()
-        self._src = ""
+        # A new stream restarts its clock at zero, so what was sent is forgotten with it.
+        self._assembler.reset()
         self._speech_final = False
         # Context from before the pause must not colour the first line after it.
         self._recent_src.clear()
@@ -1249,15 +1262,16 @@ class LivePipeline:
         self._drain_events()
 
         # 3. Commit the utterance that was still open, so nothing is left as a
-        #    draft forever. ``_src`` still being set means no EMIT happened for this
-        #    sequence, so this cannot duplicate a final. Every active target gets it.
-        if self._src:
+        #    draft forever. Text the assembler still holds was never sent, so this
+        #    cannot duplicate a final. Every active target gets it.
+        text = self._assembler.commit()
+        if text.strip():
             self._dispatch(
                 (
                     self._seq,
-                    self._src,
+                    text,
                     buffer.started_ms,
-                    max(buffer.last_voice_ms, buffer.started_ms),
+                    max(buffer.end_ms, buffer.started_ms),
                 )
             )
 
@@ -1575,21 +1589,27 @@ class LivePipeline:
         if target.language == "de":
             self._check_lag()
 
-    def _drain_events(self) -> None:
-        """Fold queued provider events into the open utterance, without awaiting.
+    def _drain_events(self) -> bool:
+        """Fold queued provider events into the unsent text, without awaiting.
 
-        Later events supersede earlier ones for the same span, so only the last
-        text survives. A provider endpoint is recorded as a hint for the
-        segmenter, never as a command. A settled chunk is not an endpoint.
+        The assembler decides what each event means for the text of the next segment;
+        an interim replaces the open hypothesis, a settled chunk is kept. A provider
+        endpoint is recorded as a hint for the segmenter, never as a command. A settled
+        chunk is not an endpoint.
+
+        Returns whether the unsent text changed, which is the segmenter's evidence that
+        the speaker is still talking.
         """
 
+        changed = False
         inbox = self._inbox
         while inbox:
             event = inbox.popleft()
-            if event.text:
-                self._src = event.text
+            if self._assembler.feed(event):
+                changed = True
             if event.speech_final:
                 self._speech_final = True
+        return changed
 
     def _wake(self) -> None:
         """Signal the German publisher. Idempotent, because the signal is a token not a count."""

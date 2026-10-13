@@ -43,7 +43,7 @@
 | MT | One committed source segment plus target-specific context | Streaming German or Arabic text |
 | Hub | Revisions | One JSON envelope per message per viewer |
 
-- The publisher commits the newest available ASR text when a segment emits. Later ASR updates do not change that committed source.
+- A segment's source text is what the recogniser has produced since the previous cut, assembled from settled chunks and the open hypothesis. Text already sent is never sent again, and later ASR updates do not change it.
 - MT starts after source commitment and publishes draft revisions as target text accumulates. A target without viewers is not warmed or called.
 
 ## Latency budget

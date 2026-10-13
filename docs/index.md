@@ -29,6 +29,7 @@
 | [launcher.py](../src/livesubs/launcher.py) | Microphone choice and credential setup before serving. | Changing live startup. |
 | [audio/selection.py](../src/livesubs/audio/selection.py) | Arrow-key selection and terminal restoration. | Changing terminal input. |
 | [language.js](../web/static/language.js) | Viewer language selection, role mapping and target text filtering. | Changing German or Arabic viewer behaviour. |
+| [transcript.py](../src/livesubs/transcript.py) | Assembles recognition events into the text of each segment. | Changing how segment text is built. |
 | [events.py](../src/livesubs/events.py) | Authoritative message models and protocol version. | Changing the wire schema. |
 | [asr/base.py](../src/livesubs/asr/base.py) and [mt/base.py](../src/livesubs/mt/base.py) | Adapter protocols and context types. | Implementing recognition or translation. |
 | [audio/base.py](../src/livesubs/audio/base.py) | Audio source protocol and frame types. | Implementing a capture backend. |

@@ -1,15 +1,14 @@
-"""Tests for the segmentation and pacing policy.
+"""Tests for the segmentation policy.
 
-These pin the two behaviours that decide whether the product is usable:
-segment boundaries, and the backlog catch-up rule that stops lag from growing
-without bound. See ``docs/03-segmentation.md``.
+These pin the behaviour that decides whether the product is usable: where segment
+boundaries fall. See ``docs/03-segmentation.md``. Display pacing is the viewer's, and is
+pinned by the shared fixtures in ``spec/pacing_vectors.json``.
 """
 
 from __future__ import annotations
 
 from livesubs.segmenter import (
     Decision,
-    Pacing,
     SegmentBuffer,
     SegmenterConfig,
     hold_ms,
@@ -82,66 +81,6 @@ def test_default_cap_is_two_seconds() -> None:
     """The tunable requirement: emit after ~2 s of continuous speech."""
 
     assert SegmenterConfig().max_segment_ms == 2000
-
-
-# --- backlog catch-up --------------------------------------------------------
-
-
-def test_advances_immediately_when_nothing_is_displayed() -> None:
-    pacing = Pacing(cfg=SegmenterConfig())
-    pacing.visible_ms = hold_ms(40)          # well past the early-advance point
-    assert pacing.on_segment_ready(current_chars=40) is True
-    assert pacing.dropped == 0
-
-
-def test_drops_a_pending_segment_that_arrived_too_early() -> None:
-    """Dropping is correct behaviour: a lost half-sentence beats growing lag."""
-
-    pacing = Pacing(cfg=SegmenterConfig())
-    pacing.visible_ms = 100                  # barely shown
-    assert pacing.on_segment_ready(current_chars=80) is False
-    assert pacing.dropped == 1
-
-
-def test_early_advance_threshold_is_sixty_percent_of_hold() -> None:
-    pacing = Pacing(cfg=SegmenterConfig())
-    required = hold_ms(50)
-
-    pacing.visible_ms = int(required * 0.59)
-    assert pacing.should_advance(current_chars=50) is False
-
-    pacing.visible_ms = int(required * 0.61)
-    assert pacing.should_advance(current_chars=50) is True
-
-
-def test_dropped_counter_accumulates_for_the_operator_console() -> None:
-    """Pacing behaviour must be auditable during rehearsal, not inferred."""
-
-    pacing = Pacing(cfg=SegmenterConfig())
-    for _ in range(5):
-        pacing.visible_ms = 0
-        pacing.on_segment_ready(current_chars=80)
-    assert pacing.dropped == 5
-
-
-def test_a_fast_speaker_never_grows_the_queue() -> None:
-    """Simulate a speaker outrunning reading speed.
-
-    Whatever happens, at most one segment may be in flight, so lag cannot
-    accumulate over a long lecture.
-    """
-
-    pacing = Pacing(cfg=SegmenterConfig())
-    in_flight = 0
-
-    for _ in range(200):
-        pacing.visible_ms += 2000          # a new segment every 2 s
-        in_flight += 1
-        if pacing.on_segment_ready(current_chars=120):
-            in_flight = 0
-
-        assert in_flight <= 1
-        assert pacing.dropped >= 0
 
 
 # --- provider endpointing vs our own VAD -------------------------------------
@@ -226,3 +165,70 @@ def test_segmenter_does_not_shadow_the_wire_segment_state() -> None:
 
     assert not hasattr(segmenter, "SegmentState")
     assert "SegmentState" not in segmenter.__all__
+
+
+# --- recognition activity as evidence of speech ----------------------------------------
+
+
+def test_recognition_activity_keeps_a_run_open_when_the_vad_hears_nothing() -> None:
+    """A quiet voice below the energy threshold is still being recognised.
+
+    The VAD alone reads this as silence, so the run used to close at the floor with a
+    fragment, or never open at all.
+    """
+
+    buf = _buffer()
+    for now in range(100, 1000, 100):
+        assert buf.observe(now, voice=False, activity=True) is Decision.HOLD
+
+
+def test_a_run_closes_after_recognition_has_gone_quiet() -> None:
+    buf = _buffer()
+    buf.observe(1000, voice=False, activity=True)
+
+    assert buf.observe(1200, voice=False) is Decision.HOLD
+    assert buf.observe(1400, voice=False) is Decision.EMIT
+
+
+def test_late_recognition_delays_the_pause_cut_until_it_catches_up() -> None:
+    """The words just before a pause are recognised a moment after it.
+
+    Cutting at the pause would leave them for the next segment as a stray fragment.
+    """
+
+    buf = _buffer()
+    buf.observe(1000, voice=True)
+    # Speech stopped at 1000. Words spoken just before it arrive at 1250.
+    assert buf.observe(1250, voice=False, activity=True) is Decision.HOLD
+    # 350 ms after the VAD went quiet would have been 1350; recognition moved it on.
+    assert buf.observe(1400, voice=False) is Decision.HOLD
+    assert buf.observe(1600, voice=False) is Decision.EMIT
+
+
+def test_cue_end_is_the_last_voiced_frame_not_the_last_recognition() -> None:
+    """A cue that ran on to the late result would sit on screen through the pause."""
+
+    buf = _buffer()
+    buf.observe(1000, voice=True)
+    buf.observe(1250, voice=False, activity=True)
+
+    assert buf.end_ms == 1000
+
+
+def test_cue_end_falls_back_to_recognition_when_the_vad_never_heard_anything() -> None:
+    buf = _buffer()
+    buf.reset(500)
+    buf.observe(900, voice=False, activity=True)
+    buf.observe(1300, voice=False, activity=True)
+
+    assert buf.end_ms == 1300
+
+
+def test_reset_clears_what_the_last_run_heard() -> None:
+    buf = _buffer()
+    buf.observe(1000, voice=True, activity=True)
+    buf.reset(1100)
+
+    assert buf.last_activity_ms == 1100
+    assert buf.voiced is False
+    assert buf.observe(1500, voice=False) is Decision.EMIT

@@ -57,10 +57,25 @@
 - Previous context can help with references and terminology, but it cannot supply words that the speaker has not said yet.
 - Rolling context travels in the user message. The system prompt stays fixed during a session.
 
+## Assembling the segment text
+
+- A streaming recogniser describes speech in spans. While a span is open each event replaces the last hypothesis. When the span settles its text is complete, and the next event starts a new span that does not repeat it.
+- Deepgram settles a chunk every few seconds, several times inside one utterance. An interim result is cumulative from the start of its chunk and knows nothing about the pipeline's cuts.
+- The assembler (`src/livesubs/transcript.py`) keeps the settled text, the open hypothesis and how far the text has been sent. A segment gets only what has not been sent.
+- How far text has been sent is measured on the recogniser's own stream clock from word timings, by the middle of each word, so a hypothesis that revises or re-times earlier words cannot make them repeat. A recogniser without timings is handled by counting the words of the open span.
+- Words recognised after a cut belong to the next segment. A chunk that settles between two cuts is kept until it is sent.
+- Without the assembler, a cut through a chunk was followed by an interim that began with the words already sent, and a chunk that settled between two cuts was overwritten by the next one. Real recordings showed both.
+
+## Recognition activity
+
+- A run opens when the energy VAD hears speech or the recogniser produces text. A voice below the VAD threshold is still recognised.
+- New recognised text counts as speech when deciding that the speaker has paused. The last words before a pause are recognised a moment after it, and closing at the VAD's pause would leave them to the next segment as a fragment.
+- A cue still ends at the last frame the VAD called voiced. Only when the VAD heard nothing in a run does the recogniser's last result end the cue.
+
 ## Interaction with ASR endpointing
 
 - Deepgram performs its own end-of-speech detection and reports `speech_final`.
-- Deepgram's settled chunks (`is_final`) are not necessarily speech endpoints. The adapter uses `speech_final` when mapping events to the pipeline's endpoint hint.
+- Deepgram's settled chunks (`is_final`) are not speech endpoints. The adapter reports them as `final` events and reports `speech_final` separately, and only `speech_final` is the pipeline's endpoint hint.
 - The cap is checked first. Below `min_segment_ms`, an endpoint or pause does not close the run.
 - With `trust_provider_endpointing: true`, a provider endpoint can close a run after the minimum duration.
 - Energy-VAD silence remains a backstop in both modes. Setting `trust_provider_endpointing: false` ignores provider hints, not the cap or VAD.

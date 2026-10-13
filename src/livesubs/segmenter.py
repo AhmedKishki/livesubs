@@ -20,7 +20,6 @@ from enum import Enum
 
 __all__ = [
     "Decision",
-    "Pacing",
     "SegmentBuffer",
     "SegmenterConfig",
     "hold_ms",
@@ -81,51 +80,6 @@ def hold_ms(chars: int) -> int:
 
 
 @dataclass(slots=True)
-class Pacing:
-    """Display-side pacing and backlog bookkeeping.
-
-    Enforces reading speed on the DISPLAY side, because reading speed is the
-    binding constraint. When translations arrive faster than they can be read,
-    the correct behaviour is to DROP the pending segment rather than queue it:
-    a lost half-sentence is a small cost, but a lag that grows monotonically
-    through a 90-minute lecture is a total failure of the product.
-    """
-
-    cfg: SegmenterConfig
-
-    #: Milliseconds the currently displayed segment has been visible.
-    visible_ms: int = 0
-    #: Whether a new segment is waiting to be displayed.
-    pending: bool = False
-    #: Segments discarded by the catch-up rule. Surfaced in the operator console
-    #: so the behaviour is auditable during rehearsal rather than inferred later.
-    dropped: int = 0
-
-    #: Fraction of the hold that must elapse before advancing early.
-    EARLY_ADVANCE_FRACTION: float = 0.6
-
-    def should_advance(self, current_chars: int) -> bool:
-        """Whether the displayed segment may be replaced right now."""
-
-        required = hold_ms(current_chars)
-        return self.visible_ms >= required * self.EARLY_ADVANCE_FRACTION
-
-    def on_segment_ready(self, current_chars: int) -> bool:
-        """A new segment arrived. Returns True to display it, False to drop it.
-
-        Dropping is correct behaviour, not a bug - see the class docstring.
-        """
-
-        if self.should_advance(current_chars):
-            self.pending = False
-            return True
-
-        self.pending = False
-        self.dropped += 1
-        return False
-
-
-@dataclass(slots=True)
 class SegmentBuffer:
     """Accumulates one speech run and decides when it is finished.
 
@@ -148,6 +102,11 @@ class SegmentBuffer:
     cfg: SegmenterConfig
     started_ms: int
     last_voice_ms: int
+    #: When the recogniser last produced new text. Evidence that someone is speaking
+    #: that does not depend on the energy VAD, which a quiet voice can fall below.
+    last_activity_ms: int = 0
+    #: Whether the energy VAD heard speech during this run.
+    voiced: bool = False
 
     def observe(
         self,
@@ -155,15 +114,26 @@ class SegmentBuffer:
         *,
         voice: bool,
         speech_final: bool = False,
+        activity: bool = False,
     ) -> Decision:
         """Feed the current VAD state and endpointing hint; decide whether to emit.
 
-        ``voice`` is our energy VAD for this frame. ``speech_final`` is the
-        provider's own end-of-utterance signal, where it supplies one.
+        ``voice`` is our energy VAD for this frame. ``speech_final`` is the provider's
+        own end-of-utterance signal, where it supplies one. ``activity`` says the
+        recogniser produced new text during this frame.
+
+        Activity counts as speech when deciding that the speaker has paused, for two
+        reasons. A voice below the VAD threshold is still recognised, and the VAD alone
+        read it as silence. And the last words before a pause are recognised a moment
+        after it, so closing at the VAD's pause left them to the next segment as a stray
+        fragment.
         """
 
         if voice:
             self.last_voice_ms = now_ms
+            self.voiced = True
+        if activity:
+            self.last_activity_ms = now_ms
 
         elapsed = now_ms - self.started_ms
 
@@ -185,19 +155,36 @@ class SegmentBuffer:
         # 4. Our own VAD is always the backstop, whether or not we trust the
         #    provider. Without it, a provider that never reports an endpoint would
         #    leave every segment to the cap.
-        if now_ms - self.last_voice_ms >= self.cfg.endpoint_silence_ms:
+        quiet_since = max(self.last_voice_ms, self.last_activity_ms)
+        if now_ms - quiet_since >= self.cfg.endpoint_silence_ms:
             return Decision.EMIT
 
         return Decision.HOLD
+
+    @property
+    def end_ms(self) -> int:
+        """Where the speech in this run ended, for the cue that describes it.
+
+        The last frame the VAD called voiced, so a cue does not run on through the
+        pause and hold the previous line up while a viewer looks away. When the VAD
+        never heard anything in the run, the recogniser's last result is the only
+        evidence there is.
+        """
+
+        if self.voiced:
+            return max(self.last_voice_ms, self.started_ms)
+        return max(self.last_activity_ms, self.started_ms)
 
     def reset(self, now_ms: int) -> None:
         """Start a new speech run from ``now_ms``.
 
         Called by the caller after acting on ``EMIT``, and after a long silence so
         that the next run's clock starts when speech resumes rather than when the
-        previous segment ended. Both clocks restart, so silence is measured from
+        previous segment ended. Every clock restarts, so silence is measured from
         now rather than from the previous run's end.
         """
 
         self.started_ms = now_ms
         self.last_voice_ms = now_ms
+        self.last_activity_ms = now_ms
+        self.voiced = False
