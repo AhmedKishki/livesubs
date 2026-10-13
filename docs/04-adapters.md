@@ -58,7 +58,8 @@ class MtProvider(Protocol):
 ```
 
 - Each target translator calls `warm()` only when its language has viewer demand, before that target's first translation. Shared recognition does not wait for an unrelated target to warm. Cache warm-up is best-effort, not a latency guarantee.
-- `translate` yields text deltas. The publisher accumulates them into draft revisions, then publishes a final translation.
+- `translate` yields text deltas. The publisher accumulates them into draft revisions, then publishes a final translation. Drafts are spaced at least 120 ms apart after the first words, which go out at once.
+- `translate` raises `MtError` when the request fails, including after some deltas. It never ends normally on a partial translation, because only the pipeline knows what a viewer has already been shown.
 - Any OpenAI-compatible endpoint is accepted for MT when the provider declares `options.adapter: openai_compat`. Without that declaration the provider is refused rather than guessed at.
 
 ## Wire contract
@@ -107,5 +108,9 @@ class MtProvider(Protocol):
 | transient socket close | The adapter stops its reader. With viewer demand, the pipeline retries with a fresh recogniser and bounded backoff. |
 | repeated provider failure | a stage exception publishes `error` with that stage. The pipeline does not switch adapters |
 | translation returns empty | publish `error` for stage MT and drop the segment. English is never shown as a substitute |
+| translation fails quickly | The adapter raises `MtError`. The pipeline retries once. |
+| translation fails after words were shown | The line is finished with a trailing `…` so its hold timer runs. It is not kept as context and not written to the subtitle files. |
+| translation passes its deadline | The segment is abandoned and not retried. The deadline is the provider's `timeout_s`, 8 s by default. |
+| translator slower than the speaker | Past `max_backlog` queued segments (6) the oldest are discarded. At `lag_queue_limit` (3) the status is `delayed`. |
 | provider cannot be built | a missing key or missing adapter raises at startup. There is no automatic stub fallback from `live` |
 | initial ASR auth failure | Raises during the connection attempt. No transcription is produced. |

@@ -377,7 +377,7 @@ async def test_translation_context_carries_forward() -> None:
 async def test_a_failing_translation_does_not_end_the_lecture() -> None:
     """One bad segment is a lost line, not a lost lecture."""
 
-    hub = await run_to_completion(make_pipeline(mt=FlakyMt(failures=1)))
+    hub = await run_to_completion(make_pipeline(mt=FlakyMt(failures=2)))
 
     errors = [
         m.data
@@ -386,6 +386,99 @@ async def test_a_failing_translation_does_not_end_the_lecture() -> None:
     ]
     assert errors
     assert any(s.state == "final" for s in hub.segments)
+    assert 0 not in {s.seq for s in hub.segments}, "the segment that failed twice is dropped"
+
+
+async def test_a_quick_failure_is_retried_once_before_the_segment_is_given_up() -> None:
+    """A dropped connection costs milliseconds to retry and a whole line not to."""
+
+    hub = await run_to_completion(make_pipeline(mt=FlakyMt(failures=1)))
+
+    assert not [m for m in hub.messages if isinstance(m, ErrorMessage)]
+    assert any(s.seq == 0 and s.state == "final" for s in hub.segments)
+
+
+async def test_a_translation_that_dies_part_way_is_never_shown_as_complete() -> None:
+    """The truncated line used to be published as a final, and remembered as context."""
+
+    class DiesOnce(RecordingMt):
+        async def translate(self, src: str, ctx: MtContext) -> AsyncIterator[MtChunk]:
+            self.sources.append(src)
+            self.contexts.append(ctx)
+            if len(self.sources) <= 2:  # the first segment, and its retry
+                yield MtChunk(text_delta="Die Schwingung")
+                yield MtChunk(text_delta=" lässt sich")
+                raise RuntimeError("connection reset")
+            async for chunk in PassthroughMt.translate(self, src, ctx):
+                yield chunk
+
+    mt = DiesOnce()
+    committed: list[Committed] = []
+    pipeline = make_pipeline(mt=mt)
+    pipeline.on_segment = committed.append
+
+    hub = await run_to_completion(pipeline)
+
+    first = [s for s in hub.segments if s.seq == 0]
+    assert first[-1].state == "final", "a line that stops must still finish, or it hangs for ever"
+    assert first[-1].de.endswith("\u2026"), "and it says it was cut short"
+    assert 0 not in {c.seq for c in committed}, "a cut-off line is not a translation to record"
+    later = [ctx for ctx in mt.contexts[2:]]
+    assert later and all("Die Schwingung" not in " ".join(c.target_context) for c in later)
+    assert any(isinstance(m, ErrorMessage) and m.data.stage == "mt" for m in hub.messages)
+
+
+async def test_a_translation_past_its_deadline_is_abandoned_and_not_retried() -> None:
+    class Stalls(PassthroughMt):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls: dict[str, int] = {}
+
+        async def translate(self, src: str, ctx: MtContext) -> AsyncIterator[MtChunk]:
+            self.calls[src] = self.calls.get(src, 0) + 1
+            await asyncio.sleep(30)
+            yield MtChunk(text_delta="never", done=True)
+
+    mt = Stalls()
+    pipeline = make_pipeline(mt=mt, duration_ms=1000)
+    pipeline.config.mt_deadline_s = 0.05
+
+    hub = await asyncio.wait_for(run_to_completion(pipeline), timeout=10)
+
+    assert mt.calls and set(mt.calls.values()) == {1}, "a timeout is never retried"
+    assert not [s for s in hub.segments if s.state == "final"]
+    assert any(isinstance(m, ErrorMessage) and m.data.stage == "mt" for m in hub.messages)
+
+
+async def test_drafts_are_spaced_but_the_first_words_and_the_final_always_go_out() -> None:
+    class Chatty(PassthroughMt):
+        async def translate(self, src: str, ctx: MtContext) -> AsyncIterator[MtChunk]:
+            for index in range(40):
+                yield MtChunk(text_delta=f"w{index} ")
+            yield MtChunk(text_delta="", done=True)
+
+    pipeline = make_pipeline(mt=Chatty(), duration_ms=1000)
+    pipeline.config.draft_interval_ms = 10_000  # nothing after the first may follow
+
+    hub = await run_to_completion(pipeline)
+
+    first = [s for s in hub.segments if s.seq == 0]
+    assert [s.state.value for s in first] == ["draft", "final"]
+    assert first[0].de == "w0 ", "the first words are published at once"
+    assert first[-1].de.startswith("w0 w1 ") and first[-1].de.rstrip().endswith("w39")
+
+
+def test_a_translator_that_cannot_keep_up_loses_the_oldest_segments_not_the_newest() -> None:
+    pipeline = make_pipeline(duration_ms=40)
+    pipeline.config.max_backlog = 3
+    pipeline._de.active = True
+
+    for seq in range(10):
+        pipeline._dispatch((seq, f"line {seq}", seq * 1000, seq * 1000 + 900))
+
+    assert [item[0] for item in pipeline._de.queue] == [7, 8, 9]
+    assert pipeline._de.shed == 7
+
 
 # --- shutdown -------------------------------------------------------------------
 

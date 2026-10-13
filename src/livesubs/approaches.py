@@ -41,6 +41,7 @@ __all__ = [
     "build_approach",
     "build_asr",
     "build_mt",
+    "mt_timeout_s",
     "pipeline_config",
     "register",
     "required_roles",
@@ -184,6 +185,7 @@ def pipeline_config(settings: Settings) -> PipelineConfig:
     from livesubs.segmenter import SegmenterConfig
 
     return PipelineConfig(
+        mt_deadline_s=mt_timeout_s(settings),
         segmenter=SegmenterConfig(
             endpoint_silence_ms=settings.segmentation.endpoint_silence_ms,
             max_segment_ms=settings.segmentation.max_segment_ms,
@@ -197,6 +199,24 @@ def pipeline_config(settings: Settings) -> PipelineConfig:
         # design, and the glossary that would fill ``keyterms`` is the M4 item.
         asr=AsrConfig(sample_rate=settings.sample_rate, channels=settings.channels),
     )
+
+
+#: The whole-segment limit for a hosted translator. A segment is two seconds of speech and
+#: stale within a few more, so waiting longer than this for one only delays the next.
+DEFAULT_MT_TIMEOUT_S = 8.0
+
+
+def mt_timeout_s(settings: Settings) -> float:
+    """How long one segment's translation may take, from the active provider's options.
+
+    A hosted model answers in a second; a model on this machine's CPU can take twenty
+    before its first token, so the limit is the deployment's to set with ``timeout_s``.
+    """
+
+    provider = settings.active_provider("mt")
+    if provider is None:
+        return DEFAULT_MT_TIMEOUT_S
+    return float(settings.provider_option(provider.name, "timeout_s") or DEFAULT_MT_TIMEOUT_S)
 
 
 def capture_source(settings: Settings, options: ApproachOptions) -> AudioSource:
@@ -352,10 +372,7 @@ def build_mt(settings: Settings, target_language: str = "de") -> MtProvider:
         api_key=_credentials(settings, provider.name),
         glossary=_glossary(settings),
         thinking=settings.provider_option(provider.name, "thinking"),
-        # A hosted model answers in a second; a model on this machine's CPU can take
-        # twenty before its first token, so the timeout is the deployment's to set. The
-        # default is a hosted model's, because that is what the shipped providers are.
-        timeout_s=float(settings.provider_option(provider.name, "timeout_s") or 20.0),
+        timeout_s=mt_timeout_s(settings),
         target_language=target_language,
     )
 

@@ -236,3 +236,37 @@ def test_an_empty_audio_option_falls_through_rather_than_choosing_silence() -> N
     """The CLI passes an empty string for "not chosen", which must not become a spec."""
 
     assert resolve_audio_spec({"audio": "  "}, _settings(capture_target="mic")) == "pw:mic"
+
+
+# --- how long a translation may take ---------------------------------------------------
+
+
+def test_a_hosted_translator_gets_a_short_limit_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    from livesubs.approaches import DEFAULT_MT_TIMEOUT_S, mt_timeout_s, pipeline_config
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+    monkeypatch.delenv("LIVESUBS_PROVIDER_DEEPSEEK_TIMEOUT_S", raising=False)
+    settings = _settings()
+
+    assert mt_timeout_s(settings) == DEFAULT_MT_TIMEOUT_S == 8.0
+    assert pipeline_config(settings).mt_deadline_s == 8.0
+
+
+def test_a_slow_local_model_can_be_given_longer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pipeline's limit follows the provider's, or it would cut a local model off."""
+
+    from livesubs.approaches import pipeline_config
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+    monkeypatch.setenv("LIVESUBS_PROVIDER_DEEPSEEK_TIMEOUT_S", "180")
+
+    assert pipeline_config(_settings()).mt_deadline_s == 180.0
+
+
+def test_without_a_translator_the_default_limit_applies(monkeypatch: pytest.MonkeyPatch) -> None:
+    from livesubs.approaches import mt_timeout_s
+
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setattr("livesubs.config.Settings.provider_key", lambda self, name: None)
+
+    assert mt_timeout_s(_settings()) == 8.0

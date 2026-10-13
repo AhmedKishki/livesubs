@@ -100,7 +100,8 @@ sudo ufw allow 8000/tcp comment 'livesubs'
 | Startup calibration is active or fails. | The reporter publishes `delayed`, with a capture error on failure. A startup failure then stops the publisher. |
 | Runtime gain protection gives up. | The operator console shows a capture error, the original gain is restored when it can be verified as safe, and capture continues with the protection off. |
 | ASR events raise in the collector. | The pipeline publishes an ASR error, without switching providers. |
-| MT raises or returns no text. | The segment is dropped with an MT error, and later segments can continue. |
+| MT raises or returns no text. | One quick retry. If it still fails, the segment is dropped with an MT error, or finished with a trailing `…` if words were already shown. Later segments continue. |
+| MT is slower than the speaker. | `delayed` at 3 queued segments. Past 6 the oldest queued segments are discarded. |
 
 ## Logging
 

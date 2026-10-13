@@ -36,6 +36,7 @@ speaker, which is the one failure a viewer cannot forgive.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections import deque
@@ -101,8 +102,23 @@ class PipelineConfig:
     asr: AsrConfig = field(default_factory=AsrConfig)
     #: How often levels are reported to the operator, in audio time.
     telemetry_interval_ms: int = 1000
-    #: Queued finals tolerated before the pipeline admits it is behind.
-    lag_queue_limit: int = 4
+    #: Queued finals at which the pipeline admits it is behind. Three queued segments is
+    #: already several seconds of lag at the usual 2 s cadence.
+    lag_queue_limit: int = 3
+    #: Queued finals at which the oldest are discarded. A subtitle that is several segments
+    #: late is worth less than the live one behind it, and a translator that is slower than
+    #: the speaker would otherwise fall further behind for the rest of the lecture.
+    max_backlog: int = 6
+    #: Shortest gap between draft revisions of one line, in milliseconds. The first words
+    #: are published at once and the final always is; the drafts between are coalesced,
+    #: because a model streams a token at a time and every draft goes to every phone.
+    draft_interval_ms: int = 120
+    #: Whole-request limit for one segment's translation, in seconds. The adapter's own
+    #: timeout covers a stalled connection; this covers a stream that trickles for ever.
+    mt_deadline_s: float | None = 30.0
+    #: Extra attempts after a translation fails quickly. A timeout is never retried: the
+    #: segment is already too late to be worth a second wait.
+    mt_retries: int = 1
 
 
 @dataclass(slots=True)
@@ -134,6 +150,8 @@ class _Target:
     #: Whether the worker is running and this language should receive segments.
     active: bool = False
     lagging: bool = False
+    #: Segments discarded because the translator could not keep up.
+    shed: int = 0
 
 
 class LivePipeline:
@@ -521,7 +539,31 @@ class LivePipeline:
             if not self._target_demand_is_current(target):
                 continue
             target.queue.append(committed)
+            self._shed(target)
             self._wake_target(target)
+
+    def _shed(self, target: _Target) -> None:
+        """Discard the oldest queued segments once a target is hopelessly behind.
+
+        Only segments that have not started are discarded, so a line being translated is
+        never cut off. The viewer misses a fragment instead of reading the whole lecture
+        further and further behind the speaker, which is the failure it cannot recover
+        from.
+        """
+
+        excess = len(target.queue) - self.config.max_backlog
+        if excess <= 0:
+            return
+        for _ in range(excess):
+            target.queue.popleft()
+        target.shed += excess
+        logger.warning(
+            "%s translation is %d segments behind; dropped the %d oldest (%d in total)",
+            target.language,
+            self.config.max_backlog + excess,
+            excess,
+            target.shed,
+        )
 
     async def _watch_audience(self) -> None:
         """Open paid providers while viewers are present, close them when none are.
@@ -1403,8 +1445,8 @@ class LivePipeline:
     ) -> None:
         """Translate one segment for one language, publishing revisions as text arrives.
 
-        Streaming the translation is the point: the first words reach the screen long
-        before the sentence finishes, which is one of the three things that make the
+        Streaming the translation is the point: the first words reach the screen
+        long before the sentence finishes, which is one of the three things that make the
         pipeline feel instant. A failure here is bounded to this language - the other
         language's loop is untouched - and never falls back to English.
         """
@@ -1424,41 +1466,93 @@ class LivePipeline:
             target_context=list(target.recent_target),
         )
 
-        chunks: list[str] = []
-        translated = ""
+        progress = _Progress()
+        failed = False
 
-        try:
-            async for chunk in mt.translate(src, context):
-                if chunk.text_delta:
-                    chunks.append(chunk.text_delta)
-                    translated = "".join(chunks)
-                    self._publish_target(
-                        target, seq, SegmentState.DRAFT, translated, src=src, audio_ms=end_ms
-                    )
-                if chunk.done:
-                    break
-        except Exception:
-            logger.exception("translation of segment %d failed for %s", seq, target.language)
-            if self._hub is not None:
-                self._hub.publish_error("translation failed", Stage.MT)
-            return
+        for attempt in range(1 + max(0, self.config.mt_retries)):
+            progress.text = ""
+            try:
+                async with _deadline(self.config.mt_deadline_s):
+                    await self._stream_translation(target, mt, seq, src, context, end_ms, progress)
+                failed = False
+                break
+            except TimeoutError:
+                logger.warning(
+                    "translation of segment %d for %s ran past its deadline", seq, target.language
+                )
+                failed = True
+                break  # already too late to be worth waiting for again
+            except Exception:
+                logger.warning(
+                    "translation of segment %d failed for %s (attempt %d)",
+                    seq, target.language, attempt + 1, exc_info=True,
+                )
+                failed = True
 
-        if not translated.strip():
-            # Falling back to the English source would put English on the overlay,
-            # which is worse than showing nothing at all.
-            logger.warning(
-                "segment %d produced no %s; dropping it", seq, target.language
-            )
-            if self._hub is not None:
-                self._hub.publish_error("empty translation", Stage.MT)
+        if failed or not progress.text.strip():
+            # An empty result is a failure too. Falling back to the English source would
+            # put English on the overlay, which is worse than showing nothing at all.
+            self._translation_failed(target, seq, progress, end_ms)
             return
 
         self._publish_target(
-            target, seq, SegmentState.FINAL, translated, src=src, audio_ms=end_ms
+            target, seq, SegmentState.FINAL, progress.text, src=src, audio_ms=end_ms
         )
-        self._remember_target(target, src, translated)
+        self._remember_target(target, src, progress.text)
 
-        self._emit_committed(target, seq, start_ms, end_ms, src, translated)
+        self._emit_committed(target, seq, start_ms, end_ms, src, progress.text)
+
+    async def _stream_translation(
+        self,
+        target: _Target,
+        mt: MtProvider,
+        seq: int,
+        src: str,
+        context: MtContext,
+        end_ms: int,
+        progress: _Progress,
+    ) -> None:
+        """Run one request, publishing drafts and recording how far it got."""
+
+        chunks: list[str] = []
+        interval = max(0, self.config.draft_interval_ms) / 1000.0
+        last_draft = float("-inf")
+
+        async for chunk in mt.translate(src, context):
+            if chunk.text_delta:
+                chunks.append(chunk.text_delta)
+                progress.text = "".join(chunks)
+                now = time.monotonic()
+                # The first words go out at once - they are the latency a viewer feels -
+                # and later drafts are spaced. Nothing is lost by skipping one: each
+                # draft carries the whole text so far, and the final carries all of it.
+                if not progress.shown or now - last_draft >= interval:
+                    self._publish_target(
+                        target, seq, SegmentState.DRAFT, progress.text, src=src, audio_ms=end_ms
+                    )
+                    last_draft = now
+                    progress.shown = True
+            if chunk.done:
+                break
+
+    def _translation_failed(
+        self, target: _Target, seq: int, progress: _Progress, end_ms: int
+    ) -> None:
+        """Close the books on a segment that could not be translated.
+
+        If words were already on screen the line is finished with a marker that it is
+        cut short, so the viewer's hold timer runs and it retires; a draft that never
+        finalises would sit there until something replaced it. It is not remembered as
+        context and not written to the subtitle files: it is not a translation.
+        """
+
+        if self._hub is not None:
+            self._hub.publish_error("translation failed", Stage.MT)
+        if progress.shown and progress.text.strip():
+            self._publish_target(
+                target, seq, SegmentState.FINAL, progress.text.rstrip() + " \u2026",
+                audio_ms=end_ms,
+            )
 
     def _emit_committed(
         self,
@@ -1723,6 +1817,20 @@ _ASR_CLOSE_GRACE_S = 2.0
 
 #: How long the watcher is given to notice shutdown before it is force-cancelled.
 _WATCHER_STOP_GRACE_S = 2.0
+
+
+@dataclass(slots=True)
+class _Progress:
+    """How far one segment's translation got, kept outside the request that may fail."""
+
+    text: str = ""
+    shown: bool = False
+
+
+def _deadline(seconds: float | None):
+    """``asyncio.timeout``, or nothing when no limit is set."""
+
+    return asyncio.timeout(seconds) if seconds else contextlib.nullcontext()
 
 
 def _backoff_seconds(failures: int) -> float:

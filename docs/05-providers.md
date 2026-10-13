@@ -52,6 +52,7 @@
 #### Current adapter behaviour
 
 - The adapter streams plain text. JSON would expose partially received markup such as `{"de": "Hallo` to the viewer.
+- The adapter raises `MtError` on any failure and sets `max_retries=0` on the SDK. The default `timeout_s` is 8 s, and the pipeline applies the same limit to a whole segment. A model on the capture machine needs a larger `timeout_s`.
 - DeepSeek's declared realtime invariant requires `thinking: disabled`.
 - It keeps a frozen system prompt so a stable prefix can qualify for DeepSeek's cache-hit input price.
 - The adapter places rolling context in the user message to retain a stable system-prompt prefix.

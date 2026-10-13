@@ -16,7 +16,7 @@ import httpx
 import pytest
 from openai import AsyncOpenAI
 
-from livesubs.mt.base import MtContext, MtProvider
+from livesubs.mt.base import MtContext, MtError, MtProvider
 from livesubs.mt.openai_compat import OpenAiCompatMt, build_system_prompt
 
 # --- the frozen prefix -------------------------------------------------------
@@ -178,8 +178,8 @@ def test_reasoning_is_refused_at_construction() -> None:
         OpenAiCompatMt(model="m", thinking="enabled")
 
 
-async def test_a_failed_call_marks_the_provider_unhealthy_without_raising() -> None:
-    """The failure is reported to the operator; the caller moves on to the next segment."""
+async def test_a_failed_call_raises_mt_error_and_marks_the_provider_unhealthy() -> None:
+    """The failure reaches the caller, which alone knows what a viewer has been shown."""
 
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, json={"error": "boom"})
@@ -187,15 +187,66 @@ async def test_a_failed_call_marks_the_provider_unhealthy_without_raising() -> N
     client = AsyncOpenAI(
         api_key="test",
         base_url="http://test",
+        max_retries=0,
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
     adapter = OpenAiCompatMt(model="m", client=client)
 
-    chunks = [chunk async for chunk in adapter.translate("Hello", MtContext())]
+    with pytest.raises(MtError) as error:
+        [chunk async for chunk in adapter.translate("Hello", MtContext())]
 
-    assert chunks[-1].done is True
     assert adapter.healthy is False
     assert adapter.last_error is not None
+    assert error.value.__cause__ is None, "no vendor exception may travel with the error"
+    assert type(error.value) is MtError
+
+
+async def test_a_stream_that_dies_part_way_raises_after_the_deltas_it_delivered() -> None:
+    """Ending normally here published a truncated line as if it were complete."""
+
+    class DyingStream:
+        def __init__(self) -> None:
+            self.items = ["Die Schwingung ", "lässt sich"]
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.items:
+                from types import SimpleNamespace
+
+                text = self.items.pop(0)
+                return SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=text))])
+            raise ConnectionResetError("peer reset the stream")
+
+        async def close(self) -> None:
+            pass
+
+    class Completions:
+        async def create(self, **kwargs: Any) -> DyingStream:
+            return DyingStream()
+
+    class Client:
+        def __init__(self) -> None:
+            from types import SimpleNamespace
+
+            self.chat = SimpleNamespace(completions=Completions())
+
+    adapter = OpenAiCompatMt(model="m", client=Client())
+    received: list[str] = []
+
+    with pytest.raises(MtError):
+        async for chunk in adapter.translate("The oscillation can be described", MtContext()):
+            received.append(chunk.text_delta)
+
+    assert received == ["Die Schwingung ", "lässt sich"]
+    assert adapter.healthy is False
+
+
+def test_the_sdk_is_not_left_to_retry_on_its_own() -> None:
+    adapter = OpenAiCompatMt(model="m", api_key="k", base_url="http://127.0.0.1:1")
+
+    assert adapter._client.max_retries == 0
 
 
 async def test_warm_marks_the_provider_ready() -> None:

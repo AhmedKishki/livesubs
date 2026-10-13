@@ -34,7 +34,7 @@ import time
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
-from livesubs.mt.base import MtChunk, MtContext
+from livesubs.mt.base import MtChunk, MtContext, MtError
 
 __all__ = ["SUPPORTED_TARGETS", "OpenAiCompatMt", "build_system_prompt"]
 
@@ -133,7 +133,7 @@ class OpenAiCompatMt:
         glossary: Sequence[str] = (),
         thinking: str | None = None,
         temperature: float = 0.0,
-        timeout_s: float = 20.0,
+        timeout_s: float = 8.0,
         client: Any | None = None,
         target_language: str = "de",
     ) -> None:
@@ -188,6 +188,11 @@ class OpenAiCompatMt:
             api_key=api_key or "not-required",
             base_url=self.base_url,
             timeout=self.timeout_s,
+            # The SDK retries twice by default, each attempt with the full timeout, so one
+            # unreachable endpoint held the only translation worker for up to a minute
+            # while the subtitles fell further behind. The pipeline decides whether a
+            # failed segment is worth another try, knowing how late it already is.
+            max_retries=0,
         )
 
     @property
@@ -286,11 +291,13 @@ class OpenAiCompatMt:
         )
 
     async def translate(self, src: str, ctx: MtContext) -> AsyncIterator[MtChunk]:
-        """Stream one segment's German, delta by delta.
+        """Stream one segment's translation, delta by delta.
 
-        A failed call marks the provider unhealthy instead of raising a second time: the
-        failure has already been reported, and the caller's contract is to move on to the
-        next segment. ``healthy`` is what drives failover.
+        Raises :class:`~livesubs.mt.base.MtError` when the request fails, including part
+        way through. The adapter used to log the failure and end the stream normally,
+        which turned a connection that died after five words into a finished, truncated
+        translation that was shown as complete and remembered as context. ``healthy``
+        records the failure as well, for callers that poll it.
         """
 
         if not src.strip():
@@ -324,8 +331,8 @@ class OpenAiCompatMt:
         except Exception as exc:  # noqa: BLE001
             self._last_error = f"{type(exc).__name__}: {exc}"
             logger.error("translation call failed: %s", self._last_error)
-            yield MtChunk(text_delta="", done=True)
-            return
+            # `from None`: nothing of the vendor's exception type travels with this one.
+            raise MtError(self._last_error) from None
 
         self._last_error = None
         self._ready = True

@@ -127,7 +127,7 @@ providers:
   # A model running on this machine, which needs no credential at all. Set
   # `requires_key: false` and validation stops asking for one; set `adapter` to the kind
   # of wire protocol it speaks, because a declared provider is otherwise refused rather
-  # than guessed at. `timeout_s` is raised because an 8B model on a CPU can take twenty
+  # than guessed at. `timeout_s` (8 by default) is raised because an 8B model on a CPU can take twenty
   # seconds to produce its first token where a hosted one takes one, and a hosted model's
   # timeout would report that as a failure.
   #

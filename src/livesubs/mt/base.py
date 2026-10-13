@@ -13,7 +13,17 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
-__all__ = ["MtChunk", "MtContext", "MtProvider"]
+__all__ = ["MtChunk", "MtContext", "MtError", "MtProvider"]
+
+
+class MtError(RuntimeError):
+    """A translation request failed.
+
+    Raised by an adapter from ``translate`` in place of whatever its transport raised, so
+    no provider type crosses the protocol. It is raised, not swallowed: a stream that dies
+    half way has produced a truncated line, and the only party that can decide what a
+    viewer should see then is the one that knows what has already been shown.
+    """
 
 
 @dataclass(slots=True)
@@ -57,7 +67,11 @@ class MtProvider(Protocol):
         ...
 
     def translate(self, src: str, ctx: MtContext) -> AsyncIterator[MtChunk]:
-        """Translate one segment, yielding deltas as they are generated."""
+        """Translate one segment, yielding deltas as they are generated.
+
+        Raises :class:`MtError` if the request fails, including after some deltas have
+        been yielded. Never ends normally on a partial translation.
+        """
         ...
 
     @property
