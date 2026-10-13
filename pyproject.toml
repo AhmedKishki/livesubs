@@ -1,6 +1,6 @@
 [project]
 name = "livesubs"
-version = "1.0.0"
+version = "1.1.0"
 description = "Realtime English-to-German lecture subtitles, served to attendees over a QR code."
 readme = "README.md"
 requires-python = ">=3.12"
