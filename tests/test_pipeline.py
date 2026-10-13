@@ -209,7 +209,7 @@ async def test_latency_is_measured_from_the_first_frame_not_from_calibration() -
     source = SpeechLikeSource(realtime=True)
 
     async def prepare() -> None:
-        await asyncio.sleep(0.4)
+        await asyncio.sleep(1.5)
 
     source.prepare = prepare  # type: ignore[attr-defined]
     stop = asyncio.Event()
@@ -224,7 +224,9 @@ async def test_latency_is_measured_from_the_first_frame_not_from_calibration() -
         await asyncio.wait_for(task, timeout=5)
 
     lag = first.timing.emit_ms - first.timing.audio_ms
-    assert lag < 400, f"{lag} ms includes the calibration that came first"
+    # Well under the calibration time and well over any lag a loaded machine adds, so
+    # neither a slow runner nor a counted calibration can pass for the other.
+    assert lag < 1000, f"{lag} ms includes the calibration that came first"
 
 
 async def test_no_published_subtitle_text_is_ever_the_speakers_own() -> None:
