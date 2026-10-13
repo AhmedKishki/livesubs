@@ -10,7 +10,7 @@ translation, the hub, the overlay, the artefacts. What is not: the words. ``live
 approach that recognises speech, and this one is named so that nobody confuses them.
 
 Timings come from the **audio clock**, accumulated from the length of the frames pushed, for
-the same reason ``pipeline.py`` uses it: a file replayed faster than real time must behave
+the same reason the ``pipeline`` package uses it: a file replayed faster than real time must behave
 exactly like a live device. The cue's own end time is carried for information; the pipeline
 re-segments the audio on its own voice detection, so what decides when a line is displayed
 is the real audio, not this file.
