@@ -97,7 +97,8 @@ sudo ufw allow 8000/tcp comment 'livesubs'
 | Condition | Current report |
 | --- | --- |
 | At least 4 finals wait for translation (`lag_queue_limit`). | The pipeline publishes `delayed`. |
-| Capture calibration is active or fails. | The reporter publishes `delayed`, with a capture error on failure. A propagated failure then stops the publisher. |
+| Startup calibration is active or fails. | The reporter publishes `delayed`, with a capture error on failure. A startup failure then stops the publisher. |
+| Runtime gain protection gives up. | The operator console shows a capture error, the original gain is restored when it can be verified as safe, and capture continues with the protection off. |
 | ASR events raise in the collector. | The pipeline publishes an ASR error, without switching providers. |
 | MT raises or returns no text. | The segment is dropped with an MT error, and later segments can continue. |
 

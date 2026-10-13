@@ -29,7 +29,7 @@ from livesubs.audio.calibration import (
     CalibrationNotice,
     CaptureMeasurement,
 )
-from livesubs.audio.pw_record import PwRecordSource, pipewire_sources
+from livesubs.audio.pw_record import GainProtectionError, PwRecordSource, pipewire_sources
 
 FRAME_BYTES = 640
 
@@ -525,10 +525,10 @@ async def test_ineffective_runtime_reduction_restores_and_fails(monkeypatch):
     source.set_calibration_reporter(notices.append)
     await source._runtime_window(b'raw')
     await source._runtime_window(b'raw')
-    with pytest.raises(CalibrationError, match='did not improve'):
+    with pytest.raises(GainProtectionError, match='did not improve'):
         await source._runtime_window(b'raw')
     assert gain.restored == [FakeSetting(10)]
-    assert notices[-1].state == 'failed'
+    assert notices[-1].state == 'degraded'
     await source.close()
 
 
@@ -583,9 +583,9 @@ async def test_runtime_control_failures_are_actionable(monkeypatch, failure):
     if failure == 'external':
         await source._runtime_window(b'raw')
         gain.setting = FakeSetting(99)
-    with pytest.raises(CalibrationError):
+    with pytest.raises(GainProtectionError):
         await source._runtime_window(b'raw')
-    assert notices[-1].state == 'failed'
+    assert notices[-1].state == 'degraded'
     assert notices[-1].message
     await source.close()
 
@@ -651,17 +651,75 @@ async def test_runtime_frames_keep_bytes_and_clock(tmp_path, monkeypatch):
     assert gain.reductions == 1
 
 
-async def test_runtime_failure_closes_and_reaps_recorder(tmp_path, monkeypatch):
-    source, _ = phased_runtime_source(tmp_path, bytes(64640))
+async def test_a_failed_correction_restores_the_gain_and_keeps_capturing(tmp_path, monkeypatch):
+    """The protection is an extra: when it fails, the lecture goes on.
+
+    A reduction that did not help used to raise out of the capture stream, which ended
+    the session for want of a safeguard. Now the original gain is put back, the operator
+    is told, and every frame still arrives.
+    """
+
+    source, payload = phased_runtime_source(tmp_path, bytes(64640))
     gain = FakeGain()
+    notices = []
+    source.set_calibration_reporter(notices.append)
     monkeypatch.setattr(pw_record, 'calibrate_capture', lambda *a, **kw: measurement())
     monkeypatch.setattr(pw_record, 'discover_gain_control', lambda target, **kw: gain)
     monkeypatch.setattr(pw_record, 'measure_pcm', lambda pcm: measurement())
-    with pytest.raises(CalibrationError, match='did not improve'):
-        await collect(source)
+
+    frames = await collect(source)
+
+    assert b''.join(f.pcm for f in frames) == payload
+    assert gain.restored == [FakeSetting(10)]
+    assert notices[-1].state == 'degraded'
+    assert 'did not improve' in notices[-1].message
     assert source._closed
     assert source._proc.poll() is not None
-    assert source._proc.stdout.closed
+
+
+async def test_a_microphone_without_a_gain_control_keeps_capturing(tmp_path, monkeypatch):
+    """Typical of a USB microphone: clipping, and nothing adjustable."""
+
+    source = emitting(tmp_path, bytes(192000))
+    source.calibration = CalibrationConfig()
+    notices = []
+    source.set_calibration_reporter(notices.append)
+    measured = []
+
+    def measure(pcm):
+        measured.append(len(pcm))
+        return measurement()
+
+    monkeypatch.setattr(pw_record, 'calibrate_capture', lambda *a, **kw: measurement())
+    monkeypatch.setattr(pw_record, 'measure_pcm', measure)
+    monkeypatch.setattr(pw_record, 'discover_gain_control', lambda target, **kw: None)
+
+    frames = await collect(source)
+
+    assert len(frames) == 300, "all six seconds of audio must arrive"
+    assert [n.state for n in notices] == ['calibrating', 'degraded']
+    assert 'no supported gain control' in notices[-1].message
+    assert len(measured) == 2, "once it has stood down it must not measure or retry"
+
+
+async def test_standing_down_is_reported_once_and_not_retried(tmp_path, monkeypatch):
+    source = emitting(tmp_path, bytes(640000))
+    source.calibration = CalibrationConfig()
+    notices = []
+    source.set_calibration_reporter(notices.append)
+    calls = []
+    monkeypatch.setattr(pw_record, 'calibrate_capture', lambda *a, **kw: measurement())
+    monkeypatch.setattr(pw_record, 'measure_pcm', lambda pcm: measurement())
+
+    def discover(target, **kwargs):
+        calls.append(target)
+
+    monkeypatch.setattr(pw_record, 'discover_gain_control', discover)
+
+    await collect(source)
+
+    assert len(calls) == 1
+    assert [n.state for n in notices].count('degraded') == 1
 
 
 async def test_runtime_disabled_does_not_measure_or_discover(tmp_path, monkeypatch):
@@ -939,11 +997,16 @@ async def test_manual_change_between_original_read_and_setter_is_not_overwritten
     monkeypatch.setattr(pw_record, 'calibrate_capture', lambda *a, **kw: measurement())
     monkeypatch.setattr(pw_record, 'discover_gain_control', lambda target, **kw: gain)
     monkeypatch.setattr(pw_record, 'measure_pcm', lambda pcm: measurement())
-    with pytest.raises(CalibrationError, match='external setting changed before setter'):
-        await collect(source)
+    notices = []
+    source.set_calibration_reporter(notices.append)
+
+    frames = await collect(source)
+
+    assert len(frames) == 200, "the lecture keeps its audio"
     assert gain.reductions == 0
-    assert gain.setting == FakeSetting(99)
+    assert gain.setting == FakeSetting(99), "an operator's manual change must stand"
     assert gain.restored == []
+    assert notices[-1].state == 'degraded'
 
 
 async def test_reader_exception_still_joins_and_rolls_back(tmp_path, monkeypatch):

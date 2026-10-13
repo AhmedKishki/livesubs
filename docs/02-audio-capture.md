@@ -111,7 +111,9 @@ pw-record \
 | Gain control is unsupported or ambiguous. | Monitor sources and shared ALSA cards cannot be adjusted safely. |
 | A mixer adjustment does not reduce clipping. | The measured signal does not verify the change. |
 
-- Launcher preflight failure prevents serving. In a direct served run, preparation or runtime calibration failure raises through the publisher and stops the session.
+- Launcher preflight failure prevents serving. In a direct served run, a startup calibration failure raises through the publisher and stops the session before any provider opens.
+- A runtime failure does not stop the session. Gain protection is an extra, and a lecture that is still being captured is worth more than a safeguard that cannot work. The protection turns itself off for the rest of the session, puts back any correction it could not verify, and reports a `degraded` notice that reaches the operator console as a capture error. Viewers' subtitles are not marked delayed.
+- A runtime failure covers an unsupported or ambiguous gain control, a gain at its floor, an external gain change, a correction that does not help, a spent adjustment budget and an unverifiable correction. A stalled or overflowing recorder is a capture failure and still ends the stream.
 
 ### Opting out
 

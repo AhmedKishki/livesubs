@@ -103,6 +103,20 @@ def test_failed_calibration_notice_reports_capture_stage():
     assert errors[-1].data.stage.value == "capture"
 
 
+def test_degraded_gain_protection_tells_the_operator_without_delaying_viewers():
+    """The extra gave up and capture goes on: an error for the console, no delayed pill."""
+
+    pipeline = make_pipeline(duration_ms=40)
+    hub = RecordingHub()
+    pipeline._hub = hub
+    pipeline._capture_calibration(CalibrationNotice("adjusting", "reducing gain"))
+    pipeline._capture_calibration(CalibrationNotice("degraded", "no supported gain control"))
+
+    errors = [m for m in hub.messages if isinstance(m, ErrorMessage)]
+    assert errors[-1].data.stage.value == "capture"
+    assert hub.statuses[-1] == "live"
+
+
 class RecordingHub(Hub):
     """A hub that keeps every published message.
 

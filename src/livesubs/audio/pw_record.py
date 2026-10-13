@@ -49,9 +49,20 @@ from livesubs.audio.calibration import (
 )
 from livesubs.audio.hardware_gain import discover_gain_control
 
-__all__ = ["PwRecordSource", "pipewire_sources"]
+__all__ = ["GainProtectionError", "PwRecordSource", "pipewire_sources"]
 
 logger = logging.getLogger(__name__)
+
+
+class GainProtectionError(CalibrationError):
+    """The optional runtime gain protection gave up.
+
+    Distinct from a capture failure on purpose. Protecting the microphone from clipping
+    is an extra, and when it cannot be done - the device has no adjustable control, a
+    correction could not be verified, the budget is spent - the lecture is still being
+    captured. Only the extra stops, and the operator is told. A capture that stalls or
+    overflows is a different failure, and still ends the stream.
+    """
 
 
 def pipewire_sources() -> list[tuple[str, str]]:
@@ -126,6 +137,8 @@ class PwRecordSource:
         self._verification_deadline = float('inf')
         self._pending_original = None
         self._degraded = False
+        #: Set once gain protection has given up, so it is not attempted again.
+        self._protection_off = False
 
         self._frame_samples = sample_rate * frame_ms // 1000
         if self._frame_samples <= 0:
@@ -247,7 +260,7 @@ class PwRecordSource:
             current = await self._blocking(self._gain.read)
             self._ensure_runtime_active()
             if current != self._expected_gain:
-                self._fail("Capture gain changed externally; stop and check the selected microphone.")
+                self._abandon("Capture gain changed externally; stop and check the selected microphone.")
             # Silence cannot establish whether the gain correction worked.
             if measurement.rms_dbfs > -60:
                 if not clipped:
@@ -269,7 +282,7 @@ class PwRecordSource:
                     )
                     return
                 await self._rollback_pending()
-                self._fail('Gain reduction did not improve capture; original gain restored. Check microphone boost or input routing.')
+                self._abandon('Gain reduction did not improve capture; original gain restored. Check microphone boost or input routing.')
             return
         if not clipped and measurement.rms_dbfs > -60 and self._degraded:
             self._degraded = False
@@ -281,7 +294,7 @@ class PwRecordSource:
         if now - self._last_adjustment < max(5.0, config.cooldown_seconds):
             return
         if self._adjustments >= min(4, config.max_adjustments):
-            self._fail('Capture remains clipped after the runtime adjustment budget; lower microphone boost manually.')
+            self._abandon('Capture remains clipped after the runtime adjustment budget; lower microphone boost manually.')
         self._notice('calibrating', 'Sustained raw capture clipping detected; checking selected microphone gain.')
         deadline = time.monotonic() + min(8.0, config.max_duration_seconds)
         if self._gain is None:
@@ -290,27 +303,27 @@ class PwRecordSource:
                 deadline=deadline, stop_event=self._stop_calibration,
             )
         if self._gain is None:
-            self._fail('Selected microphone has no supported gain control; lower its hardware gain manually.')
+            self._abandon('Selected microphone has no supported gain control; lower its hardware gain manually.')
         await self._blocking(
             self._gain.set_operation_limits, deadline=deadline, stop_event=self._stop_calibration,
         )
         original = await self._blocking(self._gain.read)
         self._ensure_runtime_active()
         if self._expected_gain is not None and original != self._expected_gain:
-            self._fail('Capture gain changed externally; check microphone settings before restarting.')
+            self._abandon('Capture gain changed externally; check microphone settings before restarting.')
         # Record rollback ownership BEFORE entering a worker that may mutate gain.
         self._pending_original = original
         adjustment = await self._blocking(self._gain.reduce, expected=original)
         self._ensure_runtime_active()
         if adjustment is None:
             self._pending_original = None
-            self._fail('Microphone gain is at its floor; check microphone boost or move away from the microphone.')
+            self._abandon('Microphone gain is at its floor; check microphone boost or move away from the microphone.')
         if adjustment.before != original:
-            self._fail('Capture gain changed during adjustment; check microphone settings before restarting.')
+            self._abandon('Capture gain changed during adjustment; check microphone settings before restarting.')
         readback = await self._blocking(self._gain.read)
         self._ensure_runtime_active()
         if readback != adjustment.after:
-            self._fail('Microphone did not retain the reduced gain; check hardware controls before restarting.')
+            self._abandon('Microphone did not retain the reduced gain; check hardware controls before restarting.')
         self._expected_gain = adjustment.after
         self._verification = (measurement, original)
         applied_at = time.monotonic()
@@ -324,7 +337,7 @@ class PwRecordSource:
 
     def _check_verification_deadline(self) -> None:
         if self._verification is not None and time.monotonic() >= self._verification_deadline:
-            self._fail('Gain correction could not be verified within the speech budget; stop and check the microphone.')
+            self._abandon('Gain correction could not be verified within the speech budget; stop and check the microphone.')
 
     def _ensure_runtime_active(self) -> None:
         # A pump failure/close can race a successful hardware worker. It must
@@ -364,6 +377,12 @@ class PwRecordSource:
     def _fail(self, message: str) -> None:
         self._notice('failed', message)
         raise CalibrationError(message)
+
+    def _abandon(self, message: str) -> None:
+        """Give up on gain protection without giving up on the lecture."""
+
+        self._notice('degraded', message)
+        raise GainProtectionError(message)
 
     @property
     def alive(self) -> bool:
@@ -448,24 +467,16 @@ class PwRecordSource:
 
                 chunk, received_at = item
                 config = self.calibration
-                if config is not None and config.enabled and config.runtime:
-                    self._check_verification_deadline()
-                    # Queued pre-change PCM and the settling interval are still
-                    # forwarded verbatim, but cannot prove a hardware change.
-                    if self._verification is not None and received_at < self._verification_not_before:
-                        self._window.clear()
-                    else:
-                        self._window.extend(chunk)
-                    window_bytes = max(1, int(self.sample_rate * max(2.0, config.measure_seconds))) * 2
-                    while len(self._window) >= window_bytes:
-                        pcm = bytes(self._window[:window_bytes])
-                        del self._window[:window_bytes]
-                        try:
-                            await self._runtime_window(pcm, received_at=received_at)
-                        except CalibrationError:
+                if (
+                    config is not None and config.enabled and config.runtime
+                    and not self._protection_off
+                ):
+                    try:
+                        await self._protect(chunk, received_at, config)
+                    except Exception as exc:
+                        if exc is self._pump_error:
                             raise
-                        except Exception as exc:  # noqa: BLE001 -- hardware errors stop capture visibly
-                            self._fail(f'Cannot correct capture gain: {exc}. Check microphone controls.')
+                        await self._stand_down(exc)
                 yield AudioFrame(
                     pcm=chunk,
                     start_ms=self._samples_emitted * 1000 // self.sample_rate,
@@ -474,6 +485,57 @@ class PwRecordSource:
                 self._samples_emitted += self._frame_samples
         finally:
             await self.close()
+
+    async def _protect(self, chunk: bytes, received_at: float, config: CalibrationConfig) -> None:
+        """Feed one frame to the runtime gain protection."""
+
+        self._check_verification_deadline()
+        # Queued pre-change PCM and the settling interval are still
+        # forwarded verbatim, but cannot prove a hardware change.
+        if self._verification is not None and received_at < self._verification_not_before:
+            self._window.clear()
+        else:
+            self._window.extend(chunk)
+        window_bytes = max(1, int(self.sample_rate * max(2.0, config.measure_seconds))) * 2
+        while len(self._window) >= window_bytes:
+            pcm = bytes(self._window[:window_bytes])
+            del self._window[:window_bytes]
+            try:
+                await self._runtime_window(pcm, received_at=received_at)
+            except CalibrationError:
+                raise
+            except Exception as exc:  # noqa: BLE001 -- any hardware error ends the protection
+                self._abandon(f'Cannot correct capture gain: {exc}. Check microphone controls.')
+
+    async def _stand_down(self, error: Exception) -> None:
+        """Turn the gain protection off for the rest of the session and keep capturing.
+
+        The protection is an extra. Two seconds of clipping on a microphone with no
+        adjustable control used to raise out of the capture stream, which ended the
+        lecture to avoid the risk of it sounding worse. Now the extra stops, an
+        unverified correction is put back, the operator is told what to do by hand, and
+        the audio keeps flowing.
+        """
+
+        self._protection_off = True
+        self._window.clear()
+        message = str(error) or type(error).__name__
+        logger.error("gain protection is off for the rest of this session: %s", message)
+        if not isinstance(error, GainProtectionError):
+            self._notice('degraded', f'Gain protection stopped: {message}')
+        try:
+            await self._rollback_pending()
+        except Exception as exc:  # noqa: BLE001 -- reported, never fatal here
+            self._notice(
+                'degraded',
+                f'Cannot safely restore unverified microphone gain: {exc}. '
+                'Check the hardware gain by hand.',
+            )
+            logger.error("could not restore the original gain: %s", exc)
+        # One attempt only. If someone else changed the setting meanwhile, trying again
+        # (or trying at close) would overwrite what they chose.
+        self._pending_original = None
+        self._verification = None
 
     async def _pump(self) -> None:
         """Drain independently of gain workers; overflow is a visible failure."""
@@ -496,7 +558,6 @@ class PwRecordSource:
                     raise CalibrationError('Microphone capture stalled; check the selected input and PipeWire.') from exc
                 if self._closed or chunk is None:
                     return
-                self._check_verification_deadline()
                 try:
                     self._queue.put_nowait((chunk, received_at))
                 except asyncio.QueueFull as exc:

@@ -1654,7 +1654,9 @@ class LivePipeline:
             return
         self._capture_detail = f"microphone: {notice.message}"
         self._calibrating = notice.state in {"calibrating", "adjusting", "failed"}
-        if notice.state == "failed":
+        if notice.state in {"failed", "degraded"}:
+            # `degraded` is runtime gain protection giving up while capture carries on:
+            # the operator needs to know, but the viewers' subtitles are not delayed.
             hub.publish_error(notice.message, Stage.CAPTURE)
         hub.publish_status(
             PipelineStatus.DELAYED if self._calibrating or self._lagging else PipelineStatus.LIVE,

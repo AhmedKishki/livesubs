@@ -67,6 +67,14 @@ class CaptureMeasurement:
 
 @dataclass(frozen=True)
 class CalibrationNotice:
+    """A capture-health report for the operator.
+
+    ``state`` is one of ``calibrating`` and ``adjusting`` (work in progress, so the
+    session shows as delayed), ``ready`` (done), ``failed`` (startup calibration could not
+    finish, and capture will not start) and ``degraded`` (runtime gain protection has given
+    up, but capture continues and the operator should act by hand).
+    """
+
     state: str
     message: str
 
