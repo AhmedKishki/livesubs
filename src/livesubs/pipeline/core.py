@@ -38,6 +38,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable, Mapping
+from typing import Any
 
 from livesubs.asr.base import AsrProvider
 from livesubs.audio.base import AudioSource, Preparable, ReportsCapture
@@ -50,6 +51,7 @@ from livesubs.pipeline.asr_session import AsrSession
 from livesubs.pipeline.health import Health
 from livesubs.pipeline.lifecycle import DemandChanged, Lifecycle
 from livesubs.pipeline.records import Committed, PipelineConfig
+from livesubs.pipeline.stats import PipelineStats
 from livesubs.pipeline.targets import Item, TargetWorker, WorkerEnv
 from livesubs.segmenter import Decision, SegmentBuffer
 from livesubs.transcript import TranscriptAssembler
@@ -130,6 +132,9 @@ class LivePipeline:
                 source_language=source_language,
             )
 
+        #: What the operator console shows. Written by the pipeline, never read by it.
+        self.stats = PipelineStats()
+
         self._hub: Hub | None = None
         self._health: Health | None = None
         self._stop: asyncio.Event | None = None
@@ -157,6 +162,56 @@ class LivePipeline:
         """Whether this run keeps the audio it captures, for the audience to be told."""
 
         return bool(getattr(self.source, "archives_audio", False))
+
+    def snapshot(self) -> dict[str, Any]:
+        """The pipeline as the operator console shows it: signal, recogniser, languages."""
+
+        audio = self.stats.audio
+        hub = self._hub
+        health = self._health
+        problems = health.open_problems() if health is not None else {}
+        return {
+            "kind": "live",
+            "uptime_s": round(time.monotonic() - self.stats.started, 1),
+            "audio": None
+            if audio is None
+            else {
+                "rms_dbfs": round(audio.rms_dbfs, 1),
+                "peak_dbfs": round(audio.peak_dbfs, 1),
+                "noise_floor_dbfs": round(audio.noise_floor_dbfs, 1),
+                "speech": audio.speech,
+                "clipping": audio.clipping,
+                "silence_s": self.stats.silence_s(),
+                "audio_s": round(self._audio_ms / 1000.0, 1),
+                "capturing": bool(getattr(self.source, "alive", True)),
+            },
+            "recognition": {
+                "open": self._asr.is_open,
+                "healthy": self._asr.healthy if self._asr.is_open else None,
+                "streams_opened": self._asr.opens,
+                "open_s": round(self._asr.open_seconds, 1),
+                "losses": self.stats.recogniser_losses,
+            },
+            "segments": {"committed": self.stats.committed},
+            "problems": {
+                ("all" if scope is None else scope): details for scope, details in problems.items()
+            },
+            "languages": {
+                language: {
+                    "active": worker.active,
+                    "warmed": worker.warmed,
+                    "readers": hub.viewer_count_for(language) if hub is not None else 0,
+                    "queue": len(worker.queue),
+                    "completed": worker.stats.completed,
+                    "failed": worker.stats.failed,
+                    "shed": worker.shed,
+                    "latency_ms": worker.stats.latency_ms.summary(),
+                    "first_word_ms": worker.stats.first_word_ms.summary(),
+                    "translate_ms": worker.stats.translate_ms.summary(),
+                }
+                for language, worker in self._workers.items()
+            },
+        }
 
     # --- running --------------------------------------------------------------------
 
@@ -231,6 +286,7 @@ class LivePipeline:
 
                 stats = self.ingest.process(frame.pcm)
                 self._audio_ms = stats.now_ms
+                self.stats.audio = stats
 
                 if self._recogniser_is_live():
                     # Push before deciding anything: the provider's own endpointing is
@@ -404,6 +460,7 @@ class LivePipeline:
         if self._asr_lost:
             return
         self._asr_lost = True
+        self.stats.recogniser_losses += 1
         logger.warning("%s; reconnecting if anyone is watching", reason)
         if self._health is not None:
             self._health.problem("asr", "recognition is reconnecting")
@@ -495,6 +552,7 @@ class LivePipeline:
         ``rev`` counter, so the streams never share a revision timeline.
         """
 
+        self.stats.committed += 1
         for worker in self._workers.values():
             worker.offer(committed)
 

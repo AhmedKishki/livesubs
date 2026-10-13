@@ -320,6 +320,11 @@ class SimPublisher:
     def supported_languages(self) -> tuple[str, ...]:
         return self.mode.targets
 
+    def snapshot(self) -> dict[str, object]:
+        """What the operator console can say about a replay: that it is one."""
+
+        return {"kind": "simulation", "script": self.script}
+
     async def run(self, hub: Hub, *, session_id: str, stop: asyncio.Event) -> None:
         try:
             async for message in replay(

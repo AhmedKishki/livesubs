@@ -37,6 +37,7 @@ from livesubs.mt.base import MtContext, MtProvider
 from livesubs.pipeline.health import Health
 from livesubs.pipeline.lifecycle import DemandChanged, cancel_bounded
 from livesubs.pipeline.records import Committed, PipelineConfig
+from livesubs.pipeline.stats import LanguageStats
 
 __all__ = ["TargetWorker", "WorkerEnv"]
 
@@ -112,6 +113,8 @@ class TargetWorker:
         self.shed = 0
         #: Translations that failed in a row.
         self.failures = 0
+        #: Figures for the operator console. Written here, read nowhere else.
+        self.stats = LanguageStats()
 
     # --- wiring ---------------------------------------------------------------------
 
@@ -319,6 +322,7 @@ class TargetWorker:
 
         progress = _Progress()
         failed = False
+        began = time.monotonic()
 
         for attempt in range(1 + max(0, env.config.mt_retries)):
             progress.text = ""
@@ -343,11 +347,15 @@ class TargetWorker:
         if failed or not progress.text.strip():
             # An empty result is a failure too. Falling back to the speaker's words would
             # put the wrong language on the overlay, which is worse than showing nothing.
+            self.stats.failed += 1
             self._failed(seq, progress, end_ms)
             return
 
         self._succeeded()
         self._publish(seq, SegmentState.FINAL, progress.text, src=src, audio_ms=end_ms)
+        self.stats.completed += 1
+        self.stats.translate_ms.add((time.monotonic() - began) * 1000.0)
+        self.stats.latency_ms.add(max(0, env.now_ms() - end_ms))
         self._remember(src, progress.text)
         self._emit(seq, start_ms, end_ms, src, progress.text)
 
@@ -367,8 +375,11 @@ class TargetWorker:
         interval = max(0, env.config.draft_interval_ms) / 1000.0
         last_draft = float("-inf")
 
+        began = time.monotonic()
         async for chunk in provider.translate(src, context):
             if chunk.text_delta:
+                if not chunks:
+                    self.stats.first_word_ms.add((time.monotonic() - began) * 1000.0)
                 chunks.append(chunk.text_delta)
                 progress.text = "".join(chunks)
                 now = time.monotonic()

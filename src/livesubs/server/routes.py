@@ -196,6 +196,20 @@ def build_router(settings: Settings) -> APIRouter:
         """For the landing page, which does not know the session id up front."""
         return session_json(request, settings.session_id)
 
+    @router.get("/api/stats")
+    async def stats(request: Request) -> JSONResponse:
+        """What the operator console shows: audience, signal, recognition, translators, host.
+
+        Polled about once a second. It carries counts and timings, never the text of a
+        lecture, so it is safe to leave open. Like the console itself it has no
+        authentication and belongs on a trusted network.
+        """
+
+        session = request.app.state.sessions.get(settings.session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail=f"unknown session: {settings.session_id}")
+        return JSONResponse(session.snapshot(request.app.state.loop_monitor))
+
     @router.get("/api/qr-url")
     async def qr_url(request: Request) -> JSONResponse:
         """The plain-text URL, shown on the landing page for anyone who cannot scan."""

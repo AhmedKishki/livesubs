@@ -16,10 +16,12 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
+from typing import Any
 
 from livesubs.events import HelloMessage, HelloPayload, PipelineStatus
 from livesubs.hub import Hub, SegmentPublisher
 from livesubs.languages import Mode
+from livesubs.metrics import LoopMonitor, process_stats
 
 __all__ = ["Session", "SessionRegistry"]
 
@@ -60,6 +62,33 @@ class Session:
         self.stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._started_at = time.monotonic()
+
+    def snapshot(self, loop_monitor: LoopMonitor | None = None) -> dict[str, Any]:
+        """Everything the operator console shows, as one JSON-ready dictionary.
+
+        The audience comes from the hub, the signal, recogniser and translators from the
+        publisher when it can describe itself, and the host from the loop monitor. A
+        publisher that cannot describe itself simply contributes nothing.
+        """
+
+        describe = getattr(self.publisher, "snapshot", None)
+        return {
+            "session": {
+                "id": self.id,
+                "name": self.name,
+                "source": self.source,
+                "default": self.default_language,
+                "languages": list(self.targets),
+                "running": self.running,
+                "failed": self.failed,
+                "uptime_s": round(self.uptime_s, 1),
+                "recording": bool(getattr(self.publisher, "records_audio", False)),
+                "status": self.hub.current_status(),
+            },
+            "audience": self.hub.metrics.snapshot(self.hub),
+            "pipeline": describe() if callable(describe) else None,
+            "server": loop_monitor.snapshot() if loop_monitor is not None else process_stats(),
+        }
 
     @property
     def default_language(self) -> str:

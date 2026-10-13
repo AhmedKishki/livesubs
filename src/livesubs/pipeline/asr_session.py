@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import deque
 from collections.abc import Callable
 
@@ -63,6 +64,13 @@ class AsrSession:
         self._first_used = False
         self._inbox: deque[AsrEvent] = deque()
 
+        #: Streams opened, and the seconds they were open. A stream is billed by the time it
+        #: is open, so the second figure is what the operator watches to see that paid work
+        #: really does stop when the room empties.
+        self.opens = 0
+        self._closed_seconds = 0.0
+        self._opened_at: float | None = None
+
     # --- state ----------------------------------------------------------------------
 
     @property
@@ -77,6 +85,18 @@ class AsrSession:
     @property
     def provider(self) -> AsrProvider | None:
         return self._provider
+
+    @property
+    def open_seconds(self) -> float:
+        """Total time a stream has been open, including the one open now."""
+
+        running = 0.0 if self._opened_at is None else time.monotonic() - self._opened_at
+        return self._closed_seconds + running
+
+    def _note_closed(self) -> None:
+        if self._opened_at is not None:
+            self._closed_seconds += time.monotonic() - self._opened_at
+            self._opened_at = None
 
     # --- opening and closing --------------------------------------------------------
 
@@ -106,6 +126,8 @@ class AsrSession:
                 provider.seek(audio_ms)
             self._inbox.clear()
             self._open = True
+            self.opens += 1
+            self._opened_at = time.monotonic()
             self._collector = asyncio.create_task(
                 self._collect(provider), name="livesubs:asr:collect"
             )
@@ -117,6 +139,7 @@ class AsrSession:
         """Stop at once and discard anything unread."""
 
         self._open = False
+        self._note_closed()
         provider, self._provider = self._provider, None
         collector, self._collector = self._collector, None
         self._inbox.clear()
@@ -137,6 +160,7 @@ class AsrSession:
         """
 
         self._open = False
+        self._note_closed()
         provider, self._provider = self._provider, None
         collector, self._collector = self._collector, None
 

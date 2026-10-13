@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 
 from livesubs.config import Settings
 from livesubs.hub import SegmentPublisher
+from livesubs.metrics import LoopMonitor
 from livesubs.server.routes import build_router, web_dir
 from livesubs.server.sessions import Session, SessionRegistry
 from livesubs.server.ws import build_router as build_ws_router
@@ -66,6 +67,7 @@ def create_app(
 
     resolved_id = session_id or settings.session_id
     registry = SessionRegistry()
+    loop_monitor = LoopMonitor()
     registry.add(
         Session(
             id=resolved_id,
@@ -79,12 +81,14 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.info("starting session %s", resolved_id)
+        loop_monitor.start()
         for session in registry:
             await session.start()
         try:
             yield
         finally:
             await registry.shutdown()
+            await loop_monitor.stop()
             logger.info("session %s stopped", resolved_id)
 
     app = FastAPI(
@@ -100,6 +104,7 @@ def create_app(
 
     # Assigned before startup so handlers and tests work in either order.
     app.state.sessions = registry
+    app.state.loop_monitor = loop_monitor
     app.state.settings = settings
 
     app.include_router(build_router(settings))

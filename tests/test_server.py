@@ -258,6 +258,45 @@ def test_log_config_keeps_this_packages_loggers_alive() -> None:
     assert "livesubs" not in LOGGING_CONFIG["loggers"]
 
 
+def test_stats_describe_the_audience_and_the_host_without_any_lecture_text() -> None:
+    with make_client() as client, client.websocket_connect("/ws/demo") as ws:
+        next_message_of_type(ws, "segment")
+        payload = client.get("/api/stats").json()
+
+    assert payload["session"]["id"] == "demo" and payload["session"]["running"] is True
+    assert payload["session"]["languages"] == ["de", "ar"]
+    assert payload["audience"]["viewers"] == 1
+    assert payload["audience"]["viewers_by_language"] == {"de": 1, "ar": 0}
+    assert payload["audience"]["messages_sent"] >= 1 and payload["audience"]["bytes_sent"] > 0
+    assert payload["server"]["open_files"] >= 3 and payload["server"]["loop_lag_ms"]["count"] >= 0
+    # A publisher that cannot describe itself contributes nothing rather than an error.
+    assert payload["pipeline"] is None
+    # The publisher's lines are "Spoken line N." and "<language> line N.".
+    assert "Spoken line" not in str(payload) and "de line" not in str(payload), (
+        "no lecture text belongs in the figures"
+    )
+
+
+def test_stats_include_what_a_publisher_says_about_itself() -> None:
+    class Describing(TickingPublisher):
+        def snapshot(self) -> dict:
+            return {"kind": "test", "committed": 7}
+
+    with make_client(Describing()) as client:
+        assert client.get("/api/stats").json()["pipeline"] == {"kind": "test", "committed": 7}
+
+
+def test_stats_count_an_operator_apart_from_viewers() -> None:
+    with (
+        make_client() as client,
+        client.websocket_connect("/ws/demo?role=admin") as ws,
+    ):
+        next_message_of_type(ws, "segment")
+        audience = client.get("/api/stats").json()["audience"]
+
+    assert (audience["viewers"], audience["operators"]) == (0, 1)
+
+
 def test_healthz_reports_the_session_running() -> None:
     with make_client() as client:
         payload = client.get("/healthz").json()

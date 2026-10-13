@@ -191,3 +191,26 @@ async def test_a_heartbeat_reaches_an_idle_viewer(monkeypatch: pytest.MonkeyPatc
 
     assert kinds[:2] == ["hello", "status"]
     assert "ping" in kinds[2:]
+
+
+async def test_what_a_viewer_reports_reaches_the_operators_figures() -> None:
+    """The acknowledgements the overlay sends are aggregated, not just drained."""
+
+    async with serving(OneLinePublisher("de", "ar")) as base:
+        async with websockets.connect(f"{base}/ws/demo", open_timeout=5) as ws:
+            for _ in range(3):
+                await asyncio.wait_for(ws.recv(), timeout=5)
+            await ws.send(
+                json.dumps({"type": "ack", "seq": 0, "rev": 0, "rendered_in_ms": 37, "dropped": 2})
+            )
+            async with httpx.AsyncClient(base_url=base.replace("ws://", "http://")) as client:
+                for _ in range(100):
+                    audience = (await client.get("/api/stats", timeout=5)).json()["audience"]
+                    if audience["render_ms"]["de"]["count"]:
+                        break
+                    await asyncio.sleep(0.02)
+
+        assert audience["render_ms"]["de"]["last"] == 37
+        assert audience["render_ms"]["ar"]["count"] == 0, "a German viewer's time is German's"
+        assert audience["dropped_lines"] == 2
+        assert audience["messages_sent"] >= 3 and audience["peak_viewers"] == 1

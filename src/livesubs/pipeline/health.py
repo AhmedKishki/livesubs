@@ -54,6 +54,11 @@ class Health:
     def is_open(self, key: str, *, scope: str | None = None) -> bool:
         return key in self._problems.get(scope, {})
 
+    def open_problems(self) -> dict[str | None, list[str]]:
+        """What is wrong right now, by scope, for the operator console."""
+
+        return {scope: list(problems.values()) for scope, problems in self._problems.items() if problems}
+
     def _report(self, scope: str | None, note: str | None = None) -> None:
         problems = self._problems.get(scope)
         if problems:

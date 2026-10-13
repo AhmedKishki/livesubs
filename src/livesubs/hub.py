@@ -57,6 +57,7 @@ from livesubs.events import (
     WireMessage,
     dumps,
 )
+from livesubs.metrics import DeliveryMetrics
 
 __all__ = [
     "ClientMailbox",
@@ -206,6 +207,11 @@ class ClientMailbox:
         self._highest: dict[str, tuple[int, int] | None] = {}
         self._event = asyncio.Event()
         self._closed = False
+        #: Lines this client was never sent because a newer line replaced them while it was
+        #: still waiting to be written to, and revisions of one line that were coalesced.
+        #: A skipped line is a client that cannot keep up; a skipped draft is ordinary.
+        self.skipped_lines = 0
+        self.skipped_drafts = 0
 
     @property
     def closed(self) -> bool:
@@ -266,6 +272,12 @@ class ClientMailbox:
                 if highest is not None and (segment.seq, segment.rev) <= highest:
                     return
                 self._highest[language] = (segment.seq, segment.rev)
+                waiting = self._segments.get(language)
+                if waiting is not None:
+                    if waiting.seq == segment.seq:
+                        self.skipped_drafts += 1
+                    else:
+                        self.skipped_lines += 1
                 self._segments[language] = self._for_role(segment)
 
             case _:
@@ -366,6 +378,27 @@ class Hub:
         #: Per language, so a translator runs only while someone reads its language.
         #: Adding a viewer of one language must not look like a new audience to the others.
         self._languages: dict[str, Presence] = {}
+        #: Counters and windows for the operator console. Fed by the socket handlers.
+        self.metrics = DeliveryMetrics(self._targets)
+
+    def current_status(self) -> dict[str, dict[str, str | None]]:
+        """The latest reported health of each scope, for the operator console.
+
+        ``all`` is the scope that concerns everyone; any other key is a target language.
+        """
+
+        return {
+            ("all" if scope is None else scope): {
+                "status": payload.status.value,
+                "detail": payload.detail,
+            }
+            for scope, payload in self._latest_status.items()
+        }
+
+    def mailboxes(self):
+        """The mailbox of every connected client, for the console's totals."""
+
+        return (subscriber.mailbox for subscriber in self._subscribers.values())
 
     def enable_audience_gating(self) -> None:
         """Mark this hub as driving paid work.
@@ -489,6 +522,7 @@ class Hub:
 
         if role.is_viewer:
             self._note_demand()
+            self.metrics.note_connect(self.viewer_count, self.viewers_by_language)
 
         return subscriber
 
@@ -498,6 +532,8 @@ class Hub:
 
         if not subscriber.role.is_viewer:
             return
+
+        self.metrics.note_disconnect(subscriber.id, subscriber.mailbox)
 
         # Clear synchronously, before the event loop can run a reconnect handler:
         # otherwise a viewer that leaves and returns within one frame would be seeded

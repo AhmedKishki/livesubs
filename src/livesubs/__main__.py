@@ -661,6 +661,16 @@ def _cmd_serve(args: argparse.Namespace, settings: Settings) -> int:
     print(f"operator     : {base}/admin", flush=True)
     print(flush=True)
 
+    from livesubs.metrics import raise_open_file_limit
+
+    limit = raise_open_file_limit()
+    if limit is not None and limit < 4096:
+        print(
+            f"warning      : only {limit} open files are allowed, so about that many phones "
+            "can connect; raise the limit with `ulimit -n` or LimitNOFILE",
+            flush=True,
+        )
+
     server = uvicorn.Server(
         uvicorn.Config(
             app,

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 
 import anyio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -105,12 +106,19 @@ async def _pump(websocket: WebSocket, hub: Hub, subscriber: Subscriber) -> None:
         if not batch:
             return
 
+        started = time.monotonic()
+        size = 0
         for message in batch:
-            await websocket.send_text(hub.encode(message))
+            text = hub.encode(message)
+            await websocket.send_text(text)
+            size += len(text.encode("utf-8"))
+        hub.metrics.note_sent(len(batch), size, (time.monotonic() - started) * 1000.0)
 
 
-async def _read_acks(websocket: WebSocket, session_id: str) -> None:
-    """Consume client messages until the socket closes."""
+async def _read_acks(
+    websocket: WebSocket, session_id: str, hub: Hub, subscriber: Subscriber
+) -> None:
+    """Consume client messages until the socket closes, keeping what viewers report."""
 
     while True:
         try:
@@ -126,6 +134,9 @@ async def _read_acks(websocket: WebSocket, session_id: str) -> None:
             continue
 
         if isinstance(message, AckMessage):
+            hub.metrics.note_ack(
+                subscriber.id, subscriber.role.language, message.rendered_in_ms, message.dropped
+            )
             logger.debug(
                 "render ack session=%s seq=%s rev=%s rendered_in_ms=%s dropped=%s",
                 session_id,
@@ -178,7 +189,7 @@ def build_router(settings: Settings) -> APIRouter:
 
                 async def receive() -> None:
                     try:
-                        await _read_acks(websocket, session_id)
+                        await _read_acks(websocket, session_id, session.hub, subscriber)
                     finally:
                         group.cancel_scope.cancel()
 
