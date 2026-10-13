@@ -2,11 +2,7 @@
 
 Defined in ``docs/04-adapters.md``. The rule: provider-specific code lives behind
 this Protocol and owns nothing else. No provider type, exception or identifier
-may leak past an adapter, so that swapping providers is a config change and can
-happen mid-lecture if a provider degrades.
-
-Not implemented yet (M2). This module exists so the interface is fixed before
-any concrete adapter is written.
+may leak past an adapter, so that swapping providers is a config change.
 """
 
 from __future__ import annotations
@@ -43,9 +39,20 @@ class AsrConfig:
 class AsrEvent:
     """One transcription update.
 
-    ``partial`` events supersede each other for the same span; ``final`` closes
-    it. The segmenter treats ``speech_final`` as a HINT, never a requirement -
-    see ``docs/03-segmentation.md`` on double-endpointing.
+    A *span* is the stretch of audio one hypothesis describes. ``partial`` events
+    supersede each other for the current span. ``final`` settles it: the text is
+    complete, it will not change, and the next event starts a new span that does not
+    repeat it. A provider that streams in chunks settles several spans inside one
+    utterance, so a ``final`` is not the speaker stopping.
+
+    ``speech_final`` is that, the provider's own end-of-utterance signal, and it is
+    independent of ``kind``. The segmenter treats it as a HINT, never a requirement -
+    see ``docs/03-segmentation.md`` on double-endpointing - and the transcript
+    assembler (``livesubs.transcript``) is what turns spans into the text of a segment.
+
+    ``words`` carries per-word timings on the provider's own stream clock, which is
+    what lets a segment cut in the middle of a span avoid repeating what it already
+    sent. Providers without timings leave it ``None``.
     """
 
     kind: Literal["partial", "final"]
@@ -74,7 +81,12 @@ class AsrProvider(Protocol):
         ...
 
     def events(self) -> AsyncIterator[AsrEvent]:
-        """Yield transcription updates as they arrive."""
+        """Yield transcription updates as they arrive.
+
+        The iterator MUST end, or raise, when the upstream stream dies. The pipeline
+        learns a recogniser is gone only that way, so an adapter that goes quiet and
+        waits for ever leaves the lecture silently without subtitles.
+        """
         ...
 
     async def close(self) -> None:
@@ -86,6 +98,7 @@ class AsrProvider(Protocol):
         """Whether the upstream connection is currently usable.
 
         Must reflect the CONNECTION, not the last response, so that a silently
-        dead socket is detectable. Drives failover per ``docs/04-adapters.md``.
+        dead socket is detectable. The pipeline polls it as a second line of defence
+        behind the event stream ending.
         """
         ...

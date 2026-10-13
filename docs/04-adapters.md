@@ -31,8 +31,9 @@ class AsrProvider(Protocol):
 - `push` takes raw 16 kHz mono s16le PCM. Adapters handle their own framing and transport.
 - `words` may be `None`. Deepgram supplies word timings. OpenAI's live transcription models do not, and must not be assumed to.
 - Only Deepgram has a built ASR adapter. An OpenAI ASR provider can be declared and hold a key, but `build_asr` accepts only `deepgram` and raises for anything else.
-- `speech_final` is the provider's own endpointing signal. The segmenter treats it as a hint, never as a requirement.
-- Deepgram marks the connection stale after two unanswered keepalive probes. `healthy` then reports false, but the pipeline does not consume it to reconnect or switch adapters.
+- `partial` events replace each other for the current span. `final` settles the span: its text will not change, and the next event starts a new span instead of repeating it. A chunked provider such as Deepgram settles several spans inside one utterance.
+- `speech_final` is the provider's own endpointing signal, independent of `kind`. The segmenter treats it as a hint, never as a requirement.
+- `events()` must end or raise when the upstream stream dies. The pipeline learns that a recogniser is gone only that way. Deepgram ends the stream when its socket closes, errors, or stays silent for two probe intervals, and `healthy` then reports false.
 
 ## MT adapter
 

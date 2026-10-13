@@ -27,6 +27,16 @@ silent socket is probed with a keepalive and then declared unhealthy.
 **Only ``speech_final`` closes an utterance.** Deepgram also offers ``UtteranceEnd``, which
 is a second, differently-timed endpointing signal; using both would double-endpoint, which
 ``docs/03-segmentation.md`` exists to prevent.
+
+**A settled chunk and an endpoint are different facts, and both are reported.** Deepgram
+sets ``is_final`` on every chunk as it settles, usually several times inside one utterance,
+and the next result then starts from empty. That is ``kind="final"``. ``speech_final`` is the
+speaker stopping, and travels separately. Collapsing the two either cut segments at every
+chunk or, when ``is_final`` was ignored, left nothing to say that a span would not change.
+
+**A transport that dies ends the event stream.** The pipeline learns a recogniser is gone
+only because its events stop. Marking the adapter unhealthy and then waiting for ever left a
+dropped socket silent for the rest of the lecture.
 """
 
 from __future__ import annotations
@@ -108,6 +118,8 @@ class DeepgramAsr:
         #: already set by an earlier utterance would let it give up immediately and drop
         #: the flush it exists to collect.
         self._final_count = 0
+        #: Whether the end-of-stream marker has been queued, so it is queued once.
+        self._events_ended = False
 
         #: Audio frames discarded because the socket could not keep up. Surfaced rather
         #: than hidden: dropped audio is a real degradation, not a rounding error.
@@ -176,10 +188,16 @@ class DeepgramAsr:
         logger.info("deepgram stream open (%s, %s)", self.model, self.url)
 
     async def push(self, pcm: bytes) -> None:
-        """Queue audio. Never blocks, and never raises on a slow socket."""
+        """Queue audio. Never blocks, and never raises on a slow or dead socket."""
 
         if not self._open:
             raise RuntimeError("DeepgramAsr.push() before open()")
+
+        if self._stale:
+            # Nobody is sending. Queueing would only fill a queue that is never drained
+            # and log a misleading "faster than the socket sends it" for every frame.
+            self.dropped_frames += 1
+            return
 
         try:
             self._queue.put_nowait(pcm)
@@ -235,6 +253,9 @@ class DeepgramAsr:
             self._last_error = f"{type(exc).__name__}: {exc}"
             self._stale = True
             logger.warning("audio upload to Deepgram stopped: %s", self._last_error)
+            # Audio can no longer leave, so nothing more will be recognised even if the
+            # reader is still listening. Say so now rather than after its own timeout.
+            self._end_events()
 
     async def _read_loop(self) -> None:
         """Turn provider messages into events, and notice a socket that has gone quiet."""
@@ -285,6 +306,15 @@ class DeepgramAsr:
                 logger.warning("Deepgram stream ended: %s", self._last_error)
             else:
                 logger.debug("Deepgram stream closed: %s", self._last_error)
+        finally:
+            # However the reader stopped, no further transcript will arrive from this
+            # socket. Everything it already delivered is ahead of the marker in the
+            # queue, so a final result that landed just before the hang-up still counts.
+            # `close()` ends the stream itself after collecting its flush, so a close we
+            # asked for is left to it.
+            if self._open:
+                self._stale = True
+                self._end_events()
 
     # --- lifecycle -----------------------------------------------------------
 
@@ -316,31 +346,58 @@ class DeepgramAsr:
         self._open = False
         socket, self._socket = self._socket, None
 
-        if socket is not None:
-            already_final = self._final_count
+        try:
+            if socket is not None:
+                already_final = self._final_count
+                try:
+                    await socket.send('{"type": "CloseStream"}')
+                    await asyncio.wait_for(
+                        self._await_final(already_final), timeout=_FLUSH_GRACE_S
+                    )
+                except TimeoutError:
+                    logger.info("no final transcript within %.1fs of CloseStream", _FLUSH_GRACE_S)
+                except Exception as exc:  # noqa: BLE001 - a failed flush must not stop shutdown
+                    logger.debug("Deepgram close was not clean: %s", exc)
+
+                try:
+                    await socket.close()
+                except Exception as exc:  # noqa: BLE001 - closing a dead socket is fine
+                    logger.debug("Deepgram socket close failed: %s", exc)
+        finally:
+            # Whatever went wrong above, the tasks are stopped and the stream is ended.
+            # A dead socket leaves the send queue full, which used to make the sentinel
+            # put raise and skip all of this.
+            self._stop_sender()
+            for task in (self._sender, self._reader):
+                if task is not None and not task.done():
+                    task.cancel()
+            await asyncio.gather(
+                *(task for task in (self._sender, self._reader) if task is not None),
+                return_exceptions=True,
+            )
+
+            self._closed.set()
+            self._end_events()
+
+    def _stop_sender(self) -> None:
+        """Wake the sender with its stop marker, making room if the queue is full."""
+
+        while True:
             try:
-                await socket.send('{"type": "CloseStream"}')
-                await asyncio.wait_for(self._await_final(already_final), timeout=_FLUSH_GRACE_S)
-            except TimeoutError:
-                logger.info("no final transcript within %.1fs of CloseStream", _FLUSH_GRACE_S)
-            except Exception as exc:  # noqa: BLE001 - a failed flush must not stop shutdown
-                logger.debug("Deepgram close was not clean: %s", exc)
+                self._queue.put_nowait(None)
+                return
+            except asyncio.QueueFull:
+                try:
+                    self._queue.get_nowait()
+                except asyncio.QueueEmpty:  # pragma: no cover - only under a race
+                    return
 
-            try:
-                await socket.close()
-            except Exception as exc:  # noqa: BLE001 - closing a dead socket is fine
-                logger.debug("Deepgram socket close failed: %s", exc)
+    def _end_events(self) -> None:
+        """Queue the end-of-stream marker exactly once."""
 
-        self._queue.put_nowait(None)
-        for task in (self._sender, self._reader):
-            if task is not None and not task.done():
-                task.cancel()
-        await asyncio.gather(
-            *(task for task in (self._sender, self._reader) if task is not None),
-            return_exceptions=True,
-        )
-
-        self._closed.set()
+        if self._events_ended:
+            return
+        self._events_ended = True
         self._events.put_nowait(None)
 
     async def _await_final(self, before: int) -> None:
@@ -385,9 +442,6 @@ def _parse_message(raw: str | bytes) -> AsrEvent | None:
     alternative: dict[str, Any] = alternatives[0] if alternatives else {}
 
     text = (alternative.get("transcript") or "").strip()
-    # ``is_final`` is deliberately not read here: Deepgram sets it on every chunk as it
-    # settles, which is not the same thing as the speaker stopping. See the note on the
-    # event below.
     speech_final = bool(message.get("speech_final"))
 
     if not text and not speech_final:
@@ -395,7 +449,9 @@ def _parse_message(raw: str | bytes) -> AsrEvent | None:
 
     words = [
         WordTiming(
-            text=str(word.get("word", "")),
+            # What the viewer reads: capitals and punctuation, not the bare word. Segment
+            # text is rebuilt from these when a segment is cut part-way through a chunk.
+            text=str(word.get("punctuated_word") or word.get("word", "")),
             start_ms=max(0, round(float(word.get("start", 0.0)) * 1000)),
             end_ms=max(0, round(float(word.get("end", 0.0)) * 1000)),
             confidence=word.get("confidence"),
@@ -414,17 +470,20 @@ def _parse_message(raw: str | bytes) -> AsrEvent | None:
         start_ms = max(0, round(start_s * 1000))
         end_ms = max(start_ms, round((start_s + float(message.get("duration") or 0.0)) * 1000))
 
+    is_final = bool(message.get("is_final"))
+
     return AsrEvent(
-        # ``speech_final``, not ``is_final``, is what closes a span. Deepgram sets
-        # ``is_final`` on every chunk as it settles, and the pipeline's contract
-        # (``asr/base.py``) reads ``final`` as *this utterance is over*: taking the API's
-        # meaning for the pipeline's let its provider-endpointing path fire on every
-        # settled chunk, so segments could be cut at the 400 ms floor - carrying one
-        # chunk's text - instead of at a pause or the cap. On continuous narration the
-        # 2 s cap still dominates, so the visible change is a modest drop in cue count
-        # (48 to about 41 over 90 s); the bug is that the two meanings were conflated at
-        # all. Only a provided ``speech_final``, or the flush on close, means a stop.
-        kind="final" if speech_final else "partial",
+        # ``final`` means this span is settled: its text will not change, and the next
+        # result starts a new span instead of repeating it. Deepgram says so with
+        # ``is_final``, which it sets on every chunk as it settles. An endpoint settles
+        # the span too, whichever flag happened to arrive.
+        #
+        # That is deliberately NOT the same as ``speech_final``, which is the speaker
+        # stopping and travels separately. Using ``is_final`` as the endpoint cut
+        # segments at every chunk, one chunk's text at a time; using only
+        # ``speech_final`` threw away the fact that earlier chunks of the same utterance
+        # were settled and complete, so a segment cut after a later chunk lost them.
+        kind="final" if (is_final or speech_final) else "partial",
         text=text,
         start_ms=start_ms,
         end_ms=end_ms,

@@ -46,30 +46,67 @@ def test_a_partial_results_message_becomes_a_partial_event() -> None:
     assert event.confidence == pytest.approx(0.94)
 
 
-def test_a_settled_chunk_does_not_close_the_utterance() -> None:
-    """Only ``speech_final`` ends a span, and mapping ``is_final`` to it was a real bug.
+def test_a_settled_chunk_is_final_but_is_not_an_endpoint() -> None:
+    """``final`` means the span is settled; ``speech_final`` is the separate endpoint hint.
 
-    Deepgram marks each chunk ``is_final`` as it settles, so treating that as the end of an
-    utterance produced one subtitle line per chunk - each a growing prefix of the last -
-    instead of one line growing in place. Running against the real API is the only place
-    that could be found, and this pins it.
+    Deepgram marks each chunk ``is_final`` as it settles, usually several times inside
+    one utterance. Treating that as an endpoint cut segments at every chunk, which was a
+    real bug. Dropping it altogether lost the one piece of information that tells the
+    transcript assembler a span will not change and the next event starts a new one, so
+    both facts are carried, separately.
     """
 
     event = _parse_message(_results(is_final=True, speech_final=False))
 
     assert event is not None
-    assert event.kind == "partial"
+    assert event.kind == "final"
     assert event.speech_final is False
 
 
+def test_an_interim_result_is_a_partial() -> None:
+    event = _parse_message(_results(is_final=False, speech_final=False))
+
+    assert event is not None
+    assert event.kind == "partial"
+
+
 def test_speech_final_is_carried_through_as_the_endpointing_hint() -> None:
-    """The segmenter treats it as a hint, and only this may close a span."""
+    """The segmenter treats it as a hint, and it implies the span is settled."""
 
     event = _parse_message(_results(is_final=True, speech_final=True))
 
     assert event is not None
     assert event.kind == "final"
     assert event.speech_final is True
+
+    # Provider documentation shows speech_final on a result that is not yet is_final.
+    # An endpoint settles the span whichever flag arrived.
+    odd = _parse_message(_results(is_final=False, speech_final=True))
+    assert odd is not None and odd.kind == "final"
+
+
+def test_words_keep_their_punctuation_and_capitals() -> None:
+    """Segment text is rebuilt from the words, so they must carry what the viewer reads."""
+
+    raw = _results(
+        is_final=True,
+        channel={
+            "alternatives": [
+                {
+                    "transcript": "Hello, there.",
+                    "words": [
+                        {"word": "hello", "punctuated_word": "Hello,", "start": 0.0, "end": 0.4},
+                        {"word": "there", "punctuated_word": "there.", "start": 0.4, "end": 0.8},
+                    ],
+                }
+            ]
+        },
+    )
+
+    event = _parse_message(raw)
+
+    assert event is not None
+    assert [word.text for word in event.words or []] == ["Hello,", "there."]
 
 
 def test_word_timings_are_preferred_over_the_result_window() -> None:
@@ -333,3 +370,102 @@ async def test_push_never_blocks_and_counts_dropped_audio() -> None:
 
     assert asr.dropped_frames == 6
     assert asr._queue.qsize() == 4
+
+
+# --- a transport that dies must be visible to the pipeline --------------------------
+
+
+async def _hangs_up_after_one_frame(connection, seen) -> None:
+    async for message in connection:
+        if isinstance(message, bytes):
+            await connection.send(_spoken("hello", final=True, speech_final=True))
+            await connection.close(code=1011, reason="internal error")
+            return
+
+
+async def _collect_until_end(asr: DeepgramAsr, timeout: float) -> list[AsrEvent]:
+    events: list[AsrEvent] = []
+
+    async def collect() -> None:
+        async for event in asr.events():
+            events.append(event)
+
+    await asyncio.wait_for(collect(), timeout=timeout)
+    return events
+
+
+async def test_the_event_stream_ends_when_the_provider_hangs_up() -> None:
+    """The pipeline learns a recogniser died only because its stream ends.
+
+    The adapter used to mark itself unhealthy and then wait for ever, so a dropped socket
+    mid-lecture silently stopped the subtitles: nothing ended the stream, and nothing
+    else read ``healthy``.
+    """
+
+    async with _fake_deepgram(_hangs_up_after_one_frame) as (uri, _seen):
+        asr = DeepgramAsr(api_key="k", url=uri)
+        await asr.open(_config())
+        await asr.push(b"\x00" * 640)
+
+        events = await _collect_until_end(asr, timeout=3)
+
+        assert [event.text for event in events] == ["hello"], "what arrived is still delivered"
+        assert not asr.healthy
+        await asr.close()
+
+
+async def test_the_event_stream_ends_when_the_socket_goes_silent(monkeypatch) -> None:
+    from livesubs.asr import deepgram
+
+    monkeypatch.setattr(deepgram, "_STALE_AFTER_S", 0.05)
+
+    async def says_nothing(connection, seen) -> None:
+        async for _ in connection:
+            pass
+
+    async with _fake_deepgram(says_nothing) as (uri, _seen):
+        asr = DeepgramAsr(api_key="k", url=uri)
+        await asr.open(_config())
+
+        await _collect_until_end(asr, timeout=3)
+
+        assert not asr.healthy
+        await asr.close()
+
+
+async def test_audio_pushed_to_a_dead_adapter_is_counted_not_queued() -> None:
+    async with _fake_deepgram(_hangs_up_after_one_frame) as (uri, _seen):
+        asr = DeepgramAsr(api_key="k", url=uri, queue_frames=4)
+        await asr.open(_config())
+        await asr.push(b"\x00" * 640)
+        await _collect_until_end(asr, timeout=3)
+
+        for _ in range(20):
+            await asr.push(b"\x00" * 640)
+
+        assert asr._queue.qsize() < 4, "a dead socket must not be fed"
+        assert asr.dropped_frames >= 20
+        await asr.close()
+
+
+async def test_close_completes_when_the_send_queue_is_full() -> None:
+    """A dead socket leaves the queue full, and closing used to raise ``QueueFull``.
+
+    That skipped the rest of the clean-up, so the tasks were never cancelled and the
+    event stream was never ended.
+    """
+
+    asr = DeepgramAsr(api_key="k", queue_frames=2)
+    asr._open = True
+    for _ in range(4):
+        await asr.push(b"\x00" * 8)
+    assert asr._queue.full()
+
+    await asr.close()
+
+    assert asr._closed.is_set()
+    assert await asyncio.wait_for(_drain(asr), timeout=1) == []
+
+
+async def _drain(asr: DeepgramAsr) -> list[AsrEvent]:
+    return [event async for event in asr.events()]

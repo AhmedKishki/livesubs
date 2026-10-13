@@ -1579,8 +1579,8 @@ class LivePipeline:
         """Fold queued provider events into the open utterance, without awaiting.
 
         Later events supersede earlier ones for the same span, so only the last
-        text survives. A provider ``final`` is recorded as a hint for the
-        segmenter, never as a command.
+        text survives. A provider endpoint is recorded as a hint for the
+        segmenter, never as a command. A settled chunk is not an endpoint.
         """
 
         inbox = self._inbox
@@ -1588,7 +1588,7 @@ class LivePipeline:
             event = inbox.popleft()
             if event.text:
                 self._src = event.text
-            if event.kind == "final":
+            if event.speech_final:
                 self._speech_final = True
 
     def _wake(self) -> None:
