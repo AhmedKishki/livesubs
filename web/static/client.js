@@ -63,6 +63,16 @@ export class ViewerClient {
 
   start() {
     if (this._socket) return;
+    // `stop()` leaves the client stopped, so a restart has to say it is wanted again.
+    // Without this a page restored from the back/forward cache called `start()` and
+    // `_open()` returned at once, leaving a viewer with no socket and no way to notice.
+    this._stopped = false;
+    this._backoff = RECONNECT_MIN_MS;
+    // A pending retry would otherwise fire later and open a second connection.
+    if (this._reconnectTimer !== null) {
+      window.clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
     this._open();
   }
 

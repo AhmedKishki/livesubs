@@ -151,7 +151,7 @@ export class SubtitleOverlay {
       // Correct behaviour, not a bug: a lost line beats lag that grows without
       // bound. Counted so rehearsal can see it happening.
       this.dropped += 1;
-      this._ack(segment, receivedAt);
+      this._ack(segment, receivedAt, { always: true });
       return action;
     }
 
@@ -314,7 +314,13 @@ export class SubtitleOverlay {
 
   // --- telemetry ------------------------------------------------------------
 
-  _ack(segment, receivedAt) {
+  _ack(segment, receivedAt, { always = false } = {}) {
+    // Finals and drops only. A draft is replaced by the next revision within a few
+    // hundred milliseconds, so acknowledging each one sent ten or more upstream
+    // messages per line from every phone, on the direction of a shared WiFi channel
+    // that is hardest to win, and nothing on the server consumes them.
+    if (!always && segment.state !== "final") return;
+
     // `rendered_in_ms` is clock-free, so it is meaningful without any clock
     // synchronisation between server and viewer. A true end-to-end figure needs
     // an offset estimate between the two clocks, which is P5 metrics work; the

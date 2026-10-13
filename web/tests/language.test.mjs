@@ -327,3 +327,27 @@ test("the Arabic overlay labels a stalled status in Arabic, not raw server detai
   assert.equal(pill.textContent, "الترجمة غير متوفرة");
   assert.equal(pill.classList.contains("is-stopped"), true);
 });
+
+// --- acknowledgements ---------------------------------------------------------------
+
+test("only finals and drops are acknowledged, not every draft revision", () => {
+  installOverlayDom();
+  const acks = [];
+  const overlay = new SubtitleOverlay(new FakeElement("div"), {
+    onAck: (payload) => acks.push(payload),
+    prefs: { fontScale: 1, position: "bottom", backdrop: "box" },
+  });
+
+  overlay.offer({ seq: 0, rev: 0, state: "draft", de: "Hal" }, 1000);
+  overlay.offer({ seq: 0, rev: 1, state: "draft", de: "Hallo" }, 1100);
+  assert.equal(acks.length, 0, "drafts are replaced within moments; nothing reads their acks");
+
+  overlay.offer({ seq: 0, rev: 2, state: "final", de: "Hallo Welt" }, 1200);
+  assert.deepEqual(acks.map((ack) => [ack.seq, ack.rev]), [[0, 2]]);
+
+  // A new line arriving inside the replacement floor is dropped, and that is reported
+  // even for a draft, because the drop count is the point of the acknowledgement.
+  overlay.offer({ seq: 1, rev: 0, state: "draft", de: "Zu frueh" }, 1300);
+  assert.equal(acks.length, 2);
+  assert.equal(acks[1].dropped, 1);
+});

@@ -97,7 +97,7 @@
 
 ## Viewer acknowledgements
 
-- The overlay sends acknowledgements for its rendering and drop decisions.
+- The overlay acknowledges each final line and each drop. It does not acknowledge draft revisions, which the next revision replaces within moments.
 - The ack carries `seq`, `rev`, `rendered_in_ms` and `dropped`.
 - `rendered_in_ms` is measured from when the viewer accepted the segment, so it needs no clock synchronisation with the server.
 - The wire field `timing.render_ms` stays unused until an offset estimate between the two clocks exists.
