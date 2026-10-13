@@ -1,9 +1,10 @@
 <!doctype html>
-<!-- Operator console. The ONLY page that shows the speaker's own words and every
-     language of the session, because a mistranslation cannot be diagnosed without the
-     source. Never link this to attendees. Minimal for P1; the level meter, latency
-     percentiles and session controls land in P5. -->
-<html lang="de">
+<!-- Operator console, always in English whatever the session's languages are. The
+     ONLY page that shows the speaker's own words and every language of the session,
+     because a mistranslation cannot be diagnosed without the source. Never link this
+     to attendees. Minimal for P1; the level meter, latency percentiles and session
+     controls land in P5. -->
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -17,21 +18,21 @@
       <h1>livesubs</h1>
       <dl class="admin-stats">
         <div><dt>Status</dt><dd id="stat-status">–</dd></div>
-        <div><dt>Zuschauer</dt><dd id="stat-viewers">–</dd></div>
-        <div><dt>Verworfen</dt><dd id="stat-dropped">0</dd></div>
+        <div><dt>Viewers</dt><dd id="stat-viewers">–</dd></div>
+        <div><dt>Dropped</dt><dd id="stat-dropped">0</dd></div>
         <div><dt>Segment</dt><dd id="stat-seq">–</dd></div>
         <div><dt>Render</dt><dd id="stat-render">–</dd></div>
       </dl>
     </header>
 
     <section class="admin-live">
-      <h2>Aktuell</h2>
+      <h2>Now</h2>
       <div id="live-lines"></div>
       <p id="live-src" class="admin-src">–</p>
     </section>
 
     <section class="admin-log">
-      <h2>Verlauf</h2>
+      <h2>History</h2>
       <ol id="history" class="admin-history"></ol>
     </section>
 

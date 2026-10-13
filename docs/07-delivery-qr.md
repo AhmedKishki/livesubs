@@ -88,7 +88,7 @@
 
 ## Operator console
 
-- `/admin` shows the speaker's recognised words and one line per target language for comparison. A history row collects the translations of one segment as they arrive.
+- `/admin` is always in English, whatever the session's languages. It shows the speaker's recognised words and one line per target language for comparison. A history row collects the translations of one segment as they arrive.
 - It shows the segment history of committed lines.
 - It shows the pipeline status.
 - It polls the viewer count about once a second. Operator connections do not count as viewers or keep paid processing active.
