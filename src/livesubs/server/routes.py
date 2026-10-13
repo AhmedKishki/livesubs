@@ -153,8 +153,10 @@ def build_router(settings: Settings) -> APIRouter:
                 "running": session.running,
                 "uptime_s": round(session.uptime_s, 1),
                 "ws_url": f"/ws/{session.id}",
-                #: Whether this run keeps the audio, so the page can say so truthfully.
-                "recording": settings.archive_audio,
+                #: Whether this run keeps the audio, so the page can say so truthfully. The
+                #: publisher is asked rather than the settings, because a simulation that
+                #: captures nothing keeps nothing whatever the settings say.
+                "recording": bool(getattr(session.publisher, "records_audio", False)),
             }
         )
 

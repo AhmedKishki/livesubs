@@ -152,6 +152,12 @@ class LivePipeline:
 
         return tuple(self._workers)
 
+    @property
+    def records_audio(self) -> bool:
+        """Whether this run keeps the audio it captures, for the audience to be told."""
+
+        return bool(getattr(self.source, "archives_audio", False))
+
     # --- running --------------------------------------------------------------------
 
     async def run(self, hub: Hub, *, session_id: str, stop: asyncio.Event) -> None:

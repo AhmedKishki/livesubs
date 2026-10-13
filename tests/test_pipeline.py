@@ -715,3 +715,19 @@ def test_the_recording_hub_stays_a_real_hub() -> None:
     """A test double that drifted from the real thing would hide bugs."""
 
     assert issubclass(RecordingHub, Hub)
+
+
+def test_a_pipeline_says_whether_it_keeps_the_audio(tmp_path) -> None:
+    """The landing page tells the audience about a recording, so the claim must be true."""
+
+    from livesubs.audio.archive import ArchivedSource
+
+    plain = make_pipeline()
+    assert plain.records_audio is False
+
+    archived = LivePipeline(
+        source=ArchivedSource(SpeechLikeSource(realtime=False, duration_ms=1000), directory=tmp_path),
+        asr=StubAsr(phrases=PHRASES),
+        translators={"de": PassthroughMt()},
+    )
+    assert archived.records_audio is True

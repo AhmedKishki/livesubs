@@ -59,6 +59,9 @@ def recording_stem(label: str) -> str:
 class ArchivedSource:
     """An :class:`~livesubs.audio.base.AudioSource` that also writes a WAV file."""
 
+    #: Marks a source that keeps what it captures, so a session can say so to its audience.
+    archives_audio = True
+
     def __init__(
         self,
         source: AudioSource,

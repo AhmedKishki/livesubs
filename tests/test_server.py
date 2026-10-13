@@ -145,6 +145,19 @@ def test_session_metadata_describes_each_language_for_the_picker() -> None:
     assert targets["ar"]["native"] == "العربية" and targets["ar"]["dir"] == "rtl"
 
 
+def test_the_session_says_it_records_only_when_the_publisher_does() -> None:
+    """The landing page repeats this to the audience, so it cannot come from a setting alone."""
+
+    class Recording(TickingPublisher):
+        records_audio = True
+
+    with make_client(Recording()) as client:
+        assert client.get("/api/session").json()["recording"] is True
+
+    with make_client() as client:
+        assert client.get("/api/session").json()["recording"] is False
+
+
 def test_a_publisher_that_declares_nothing_offers_only_the_default_language() -> None:
     class Plain:
         async def run(self, hub, *, session_id, stop):
