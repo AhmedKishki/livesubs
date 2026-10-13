@@ -93,6 +93,29 @@ sudo ufw allow 8000/tcp comment 'livesubs'
 - Check CPU load and thermal throttling if capture or translation falls behind.
 - `delayed` can report translation backlog or capture calibration. It does not prove text correctness or transcript completeness.
 
+## Capacity
+
+- Measured with `tools/load_test.py` against `livesubs --serve --approach sim --speed 4`, on a 16-core development laptop, with the load generator on the same machine and the loopback interface in between. Each row used a fresh server, 80% of phones reading the default language and 20% reading Arabic, and 30 s connected after a ramp of up to 30 s.
+- Each phone behaved like the viewer page: it answered every heartbeat and acknowledged every final line. The publisher sent each phone between 1.6 and 2 messages per second, which is a line every few seconds with a first draft and a final.
+
+| Phones | Event-loop lateness (95th) | Processor | Memory | Final lines delivered to every phone |
+| --- | --- | --- | --- | --- |
+| 100 | 1 ms | 7% of one core | 86 MB | all |
+| 500 | 2 ms | 14% | 127 MB | all |
+| 1,000 | 17 ms | 21% | 178 MB | all |
+| 1,500 | 26 ms | 31% | 229 MB | all |
+| 2,500 | 62 ms | 41% | 331 MB | all |
+| 3,500 | 113 ms | 55% | 434 MB | all |
+| 5,000 | 228 ms | 95% | 587 MB | all |
+
+- The lateness figures include the ramp, when handshakes are the heaviest work, so they bound the steady state from above. Every final line reached every phone in every run. A draft replaced before it was sent is the design, not a loss, and no run skipped more than four lines for a phone that could not keep up.
+- One process uses one core. Each message delivered cost about 100 µs of it, acknowledgements and heartbeats included, so a server delivers roughly 9,000 messages a second before the loop is saturated.
+- The practical limit follows from the message rate. At the rate measured, the loop stays under 100 ms late up to about 3,000 phones, and 5,000 pegs the core. At 3 messages per phone per second the same limits fall to about 1,800 and 3,000 phones. Lateness adds directly to the delay of every line, so the console warns at 100 ms.
+- Recognition and translation do not scale with phones. Provider work depends on how long a stream is open and on how many languages someone reads.
+- The message rate is set mostly by `PipelineConfig.draft_interval_ms`, the shortest gap between drafts of one line (120 ms). It is not a setting yet, so changing it means changing the code.
+- The server raises its open-file limit to 16,384 at startup when the hard limit allows it, and warns when it cannot reach 4,096. Every phone is an open file, and the usual default of 1,024 would refuse phone number 1,000.
+- Not measured: the room's WiFi, which is the likelier limit in a hall, TLS, a slower processor than the test laptop, and a generator on another machine. Check the figures on the real hardware with `tools/load_test.py --host SERVER_ADDRESS` from another computer, and read the operator console's event-loop lateness and open-file figures during the lecture.
+
 ## Failure behaviour
 
 - An exception escaping the publisher sets the session to `stopped` with the generic detail `publisher failed`.
@@ -158,6 +181,12 @@ sudo ufw allow 8000/tcp comment 'livesubs'
 - `--speaker de` rehearses a German speaker.
 - `--player` takes any command containing `{file}`.
 - The default player is the first available of `gst-play-1.0`, `pw-play` and `aplay`, so one of them must be installed for sound.
+
+## Load testing
+
+- `uv run python tools/load_test.py --viewers 500 --duration 30` connects that many simulated phones to a running server and prints the fan-out spread (first phone to last, per message), whether every phone received every final line, and the server's own figures taken from `/api/stats`.
+- Serve something that publishes at lecture pace first, for example `livesubs --serve --approach sim --speed 4`. `--processes` sets how many generator processes share the connections, `--arabic` sets the share of phones reading the second language, and `--json PATH` saves the report.
+- Run the generator from another machine for a figure that includes the network.
 
 ## Probing the socket
 

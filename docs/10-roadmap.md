@@ -2,8 +2,8 @@
 
 ## Operator console and visibility
 
-- Wire `on_stats` to a capture level meter.
-- Aggregate viewer acknowledgement durations and drop counts. The operator's dropped-count field currently has no incoming data.
+- Make the draft interval a setting, so an operator can trade subtitle smoothness for a lower message rate on a crowded network.
+- Keep figures over time. The console shows the last 256 samples of each timing and the current counters, and keeps no history of a lecture.
 - Implement clock alignment before reporting end-to-end latency percentiles. `rendered_in_ms` measures only client-side handling, and `timing.render_ms` is unused.
 - Add session start, stop and restart controls, with re-warming after a glossary change.
 - Localise server status details before passing them to viewers.

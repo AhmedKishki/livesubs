@@ -12,7 +12,7 @@
 | [05-providers](05-providers.md) | Provider capabilities, recorded prices, comparisons, and data residency. | Choosing or evaluating a provider. |
 | [06-overlay-spec](06-overlay-spec.md) | Subtitle layout, display pacing, controls, accessibility, and browser checks. | Changing or testing the viewer. |
 | [07-delivery-qr](07-delivery-qr.md) | URL selection, QR delivery, and network diagnostic limits. | Investigating phone connectivity. |
-| [08-operations](08-operations.md) | Deployment, the lecture runbook, rehearsal, and retention policy. | Preparing a lecture or diagnosing a running session. |
+| [08-operations](08-operations.md) | Deployment, the lecture runbook, capacity, rehearsal, and retention policy. | Preparing a lecture or diagnosing a running session. |
 | [09-evaluation](09-evaluation.md) | Evaluation methods, measurements, and acceptance targets. | Comparing output or checking performance. |
 | [10-roadmap](10-roadmap.md) | Unimplemented and deferred work. | Choosing development work. |
 | [11-extending](11-extending.md) | Provider, pipeline, capture, and delivery extension procedures. | Adding an implementation. |
@@ -30,6 +30,8 @@
 | [audio/selection.py](../src/livesubs/audio/selection.py) | Arrow-key selection and terminal restoration. | Changing terminal input. |
 | [languages.py](../src/livesubs/languages.py) | The language registry and the speaker-language modes. | Adding a language or a mode. |
 | [language.js](../web/static/language.js) | Viewer language selection, role mapping, interface strings and target text filtering. | Changing viewer language behaviour. |
+| [metrics.py](../src/livesubs/metrics.py) | The figures the operator console shows: rolling windows, delivery counters, event-loop lateness and process limits. | Adding or changing an operator figure. |
+| [stats.js](../web/static/stats.js) | Formatting and the thresholds that decide what the console flags. | Changing what the console flags. |
 | [pipeline/](../src/livesubs/pipeline/) | The live pipeline: on-demand lifecycle, recogniser session, per-language translation workers and health reporting. | Changing how paid work starts, stops or reports problems. |
 | [transcript.py](../src/livesubs/transcript.py) | Assembles recognition events into the text of each segment. | Changing how segment text is built. |
 | [events.py](../src/livesubs/events.py) | Authoritative message models and protocol version. | Changing the wire schema. |

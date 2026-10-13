@@ -8,6 +8,7 @@
 | `/s/{session_id}` | attendees | the subtitle page in the session's default language, and the QR target |
 | `/s/{session_id}?lang=ar` | attendees requesting another language | the subtitle page in that language, here Arabic |
 | `/admin` | operator | the speaker's words and every target language, final-line history, status, connection count and local render duration |
+| `/api/stats` | operator page | counts and timings for the console, polled once a second |
 | `/ws/{session_id}` | viewer and operator pages | WebSocket for `segment`, `status`, `hello` and `error` messages |
 | `/qr.png` | landing page | rendered QR for the current session |
 
@@ -73,7 +74,7 @@
 ## Bandwidth and concurrency
 
 - At an assumed 1 KB per revision and one revision every 2 s, traffic is about 500 B/s per viewer, or 50 KB/s (0.4 Mbit/s) for 100 viewers.
-- Streamed draft revisions add messages, and long segments add bytes. The estimate is not a measured concurrency limit.
+- Streamed draft revisions add messages, and long segments add bytes. The server-side limit was measured: see Capacity in [08-operations](08-operations.md).
 - The fan-out cost is per-message JSON serialisation. Serialise once per revision and write the same bytes to every socket.
 - Laptop WiFi power saving can add latency jitter. Disable it during lectures, and prefer the wired USB Ethernet adapter for the uplink if the room provides a port.
 
@@ -89,13 +90,22 @@
 ## Operator console
 
 - `/admin` is always in English, whatever the session's languages. It shows the speaker's recognised words and one line per target language for comparison. A history row collects the translations of one segment as they arrive.
-- It shows the segment history of committed lines.
-- It shows the pipeline status.
-- It polls the viewer count about once a second. Operator connections do not count as viewers or keep paid processing active.
+- It shows the segment history of committed lines and the last few pipeline errors.
+- Operator connections do not count as viewers or keep paid processing active.
 - `/api/session` and `/healthz` report `viewers` separately from total `connections`.
-- Its render duration measures handling in the operator's own browser, not a viewer's end-to-end latency.
-- A dropped-count field exists, but viewer acknowledgements are not routed to it and it remains unpopulated.
 - The landing page does not link to `/admin`. The operator role still has no authentication.
+
+### Figures
+
+- The console polls `/api/stats` once a second. The response carries counts and timings, never lecture text, and is documented by [metrics.py](../src/livesubs/metrics.py) and the pipeline's `snapshot()`. It has the same lack of authentication as the console.
+- The console and `/api/stats` fail independently: a console whose socket has dropped still shows the figures, and a failed poll shows "server unreachable" instead of stale numbers.
+- **Audience:** viewers now, by language, the peak, operators, joins and leaves, and the lines phones report dropping or the server skipped because a phone could not keep up.
+- **Audio input:** a level meter with the recent peak and the voice detector's noise floor, whether speech is present or how long the input has been silent, clipping, whether capture is delivering, and the audio clock.
+- **Recognition:** whether a stream is open, the total time streams have been open, streams opened, how often one was lost, and the lines produced. The open time is what the recognition provider bills, so it should stop rising when the last viewer leaves.
+- **Translation:** for each language, its readers, whether its translator is running, its queue, lines completed and failed, the delay from the end of the spoken words to the final line, the time to the first translated words, the whole request, and what phones report for showing a line. Delays are the median and the 95th percentile of the last 256 samples.
+- **Server:** how late the event loop runs, processor, memory, open files against their limit, and the time to write one client's batch. The event-loop figure is the one that says whether the server keeps up, whatever the audience size.
+- **Attention list:** the console lists what to look at, worst first: a stopped pipeline, a delayed language, capture stopped, clipping, a long silence while recognition is open, failed or shed translations, an event loop running 100 ms late or more, open files above 80% of the limit, and phones that take over 1.5 s to show a line. The thresholds are in [stats.js](../web/static/stats.js).
+- A simulation has no capture, recognition or translators, so those cards say so.
 
 ## Viewer acknowledgements
 
@@ -103,7 +113,7 @@
 - The ack carries `seq`, `rev`, `rendered_in_ms` and `dropped`.
 - `rendered_in_ms` is measured from when the viewer accepted the segment, so it needs no clock synchronisation with the server.
 - The wire field `timing.render_ms` stays unused until an offset estimate between the two clocks exists.
-- The server drains acknowledgement messages but does not aggregate `rendered_in_ms` or drop counts into operator metrics.
+- The server aggregates `rendered_in_ms` into a per-language window and keeps each connection's latest `dropped` count, folding it into a total when the connection closes. Both are reported to the operator console. A viewer is untrusted input, so negative values are clamped to zero.
 
 ## Landing page content
 
