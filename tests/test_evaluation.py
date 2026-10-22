@@ -11,8 +11,11 @@ import pytest
 
 from livesubs.evaluation import (
     SessionReport,
+    Turn,
+    check_languages,
     chrf_corpus,
     chrf_sentence,
+    guess_language,
     identical_to_source_fraction,
     length_ratio,
     normalise,
@@ -23,6 +26,7 @@ from livesubs.evaluation import (
     wer,
     wer_on_numbers,
 )
+from livesubs.subtitles import Cue
 
 # --- normalisation and tokenising -------------------------------------------
 
@@ -295,3 +299,54 @@ def test_report_renders_the_numbers_it_was_given() -> None:
     assert "numbers : 0.0% kept (0/1)" in text
     assert "segments : 2" in text
     assert "lost '40'" in text
+
+
+# --- a conversation: which language each line is in ---------------------------------
+
+def test_english_german_and_arabic_lines_are_told_apart() -> None:
+    assert guess_language("The amplitude decreases over time, and that is not small.") == "en"
+    assert guess_language("Die Amplitude nimmt mit der Zeit ab, und das ist nicht wenig.") == "de"
+    assert guess_language("تتناقص السعة مع مرور الوقت.") == "ar"
+
+
+def test_a_line_too_short_to_tell_is_not_guessed() -> None:
+    assert guess_language("Okay.") is None
+    assert guess_language("Gregor Samsa") is None
+
+
+TURNS = [Turn("en", 0, 10_000), Turn("de", 10_400, 20_000), Turn("en", 20_400, 24_000)]
+
+
+def test_a_target_line_in_the_wrong_language_is_reported() -> None:
+    cues = [
+        Cue(1_000, 3_000, "He woke up and he was not a man."),
+        Cue(11_000, 13_000, "Er wachte auf und er war nicht mehr ein Mensch."),
+        Cue(21_000, 23_000, "It was not a dream, and he knew that."),
+    ]
+
+    check = check_languages("en", cues, TURNS, expected="en")
+
+    assert check.cues == 3
+    assert [(cue.start_ms, guessed) for cue, _, guessed in check.wrong] == [(11_000, "de")]
+    assert check.silent_turns == []
+
+
+def test_a_transcript_line_is_held_to_the_language_of_its_turn() -> None:
+    """The transcript of a conversation is right when it follows the speakers."""
+
+    cues = [
+        Cue(1_000, 3_000, "He woke up and he was not a man."),
+        Cue(11_000, 13_000, "He woke up and it was not a dream."),
+    ]
+
+    check = check_languages("en+de", cues, TURNS, expected=None)
+
+    assert [(cue.start_ms, expected) for cue, expected, _ in check.wrong] == [(11_000, "de")]
+
+
+def test_a_turn_with_no_subtitle_is_reported() -> None:
+    cues = [Cue(1_000, 3_000, "He woke up and he was not a man.")]
+
+    check = check_languages("en", cues, TURNS, expected="en")
+
+    assert check.silent_turns == [1, 2]

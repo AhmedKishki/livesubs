@@ -24,6 +24,7 @@
 - Compare provider quality and latency on the same corpus.
 - Measure fragment grammaticality when tuning `max_segment_ms`.
 - Generate a corrected transcript from archived audio with a post-lecture recognition pass.
+- Stop words repeating at segment boundaries. The assembler drops a word already sent only when its midpoint falls before the last cut, and Deepgram's next result often stretches the last word sent past that point, so the word is sent again. The 2026-10-23 conversation run showed "a human being, only" followed by "only somewhat too".
 - Add a bilingual viewer mode through a separate opt-in role. No viewer shows the speaker's words beside the translation today.
 - Evaluate stable-prefix translation using the LocalAgreement idea from `ufal/whisper_streaming` and `SimulStreaming`. The current pipeline starts MT after source commitment, not after prefix agreement.
 
@@ -31,7 +32,7 @@
 
 - Measure recognition, translation quality and cost for a German speaker and for Arabic subtitles. Only English-to-German has corpus measurements.
 - Have a reader of Arabic review the Arabic prompt, the simulated Arabic lines and the Arabic viewer strings. No such review is recorded.
-- Measure an English/German conversation: words lost around a language switch, lines in the wrong language, translation accuracy, and median and 95th-percentile delay. No conversation has been measured.
+- Measure a recorded English/German conversation with several speakers on one microphone, short replies and overlapping speech. Only spliced audiobook clips have been measured, as recorded in [09-evaluation](09-evaluation.md). Translation accuracy in a conversation has not been scored.
 - Compare passing same-language speech through untranslated with translating every segment. In a `multi` stream Deepgram labels each word's language, and the adapter discards the labels. Passthrough would send a transcript to the viewers of its language, so it needs the AGENTS.md rule on source text changed.
 - Compare Deepgram's `flux-general-multi` with Nova-3 `multi` for conversations. Flux detects the end of a turn itself, but it uses a different endpoint and event format, so it needs its own adapter.
 

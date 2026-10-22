@@ -69,6 +69,34 @@
 - `--self-test` corrupts the reference with a known error rate and fails when the metric does not reproduce it.
 - A generated transcript is the pipeline's own output, a hypothesis rather than ground truth.
 
+### Conversation (English and German)
+
+- `tools/splice_conversation.py` cuts windows from English and German recordings, joins them in the given order with silence between them, and writes a 16 kHz mono WAV and a turn manifest. The manifest gives each turn's language and span on the session's audio clock. The tool needs `gst-launch-1.0`.
+- The WAV starts with 5 s of silence so that viewers can connect before the first turn. Without a viewer the live pipeline drops the audio.
+- Replay it with `livesubs --serve --approach live --speaker en+de --audio file:PATH`, with a viewer connected for each language to check. A scripted viewer must answer heartbeats and acknowledge finals as the viewer page does ([07-delivery-qr](07-delivery-qr.md)). Otherwise the server drops it after 30 s, and recognition stops for lack of an audience.
+- `tools/check_conversation.py --turns MANIFEST STEM` checks every `STEM.*.srt` the session wrote. A target file is held to its own language. The transcript is held to the language of the turn that each line overlaps most, so recognition in the wrong language shows there. The tool lists the lines in the wrong language and the turns that produced no line.
+- `evaluation.guess_language` reads a line's language from English and German function words, and Arabic from its script. A line with no function word, or with as many of each, counts as too short to tell.
+- Delay is `emit_ms - audio_ms` from the segment timings, on the server clock. It covers recognition, segmentation and translation, not the network or the phone.
+- Spliced clips have no replies to each other and no shared room sound, so they test language switching and not a real conversation's acoustics or overlapping speech.
+
+```bash
+uv run python tools/splice_conversation.py \
+  --clip en:clips/en.mp3@60-80 --clip de:clips/de.mp3@60-66 --clip en:clips/en.mp3@80-84 \
+  --out samples/conversation-16k-mono.wav
+uv run python tools/check_conversation.py \
+  --turns samples/conversation-16k-mono.turns.json recordings/demo-20261023-101500
+```
+
+#### Recorded run, 2026-10-23
+
+- Audio: 118.6 s of ten alternating turns, 3 to 20 s long, cut from part 1 of two public-domain LibriVox readings. English came from *The Metamorphosis* (`metamorphosis_1401_librivox`, 60–114 s) and German from *Die Verwandlung* (`verwandlung_mw_0811_librivox`, 60–113 s).
+- Providers: Deepgram Nova-3 `multi` with `endpointing=100`, and DeepSeek `deepseek-flash`, with English, German and Arabic viewers connected throughout.
+- Every turn produced at least one line in every file.
+- None of the 55 lines in each target file was in the wrong language. Between 8 and 13 lines per file were too short to tell.
+- Two of the 55 transcript lines were in the wrong language, both at a switch. One segment spanned the end of an English turn and the start of a German one. In the other, English speech just after a German turn was recognised as the German words "hing das Bild".
+- Same-language speech reached its readers close to the transcript, recognition errors included. German readers saw "ne, flimmbatten ihm hilf" where the English translation read "no, flickered before his eyes".
+- Server-side delay over 58 segments per language: first words p50 0.93–0.96 s and p95 1.47–1.54 s; finals p50 1.04–1.08 s, p95 1.55–1.64 s and at most 1.79 s.
+
 ### Planned metrics
 
 - BLEU and COMET would add translation-comparison scores.

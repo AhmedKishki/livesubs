@@ -45,4 +45,5 @@
 | `samples/reference.en.txt` and `samples/reference.de.txt` | Derived reference text. | Scoring recognition or translation. |
 | `samples/reference.en.timed.srt` | Aligned English reference cues. | Running timed-transcript translation. |
 | `samples/corpus-manifest.json` | Corpus digests, duration, and text counts. | Checking corpus inputs and measurements. |
+| `samples/conversation-16k-mono.wav` and `.turns.json` | A spliced English/German test conversation and the language of each turn. | Testing a conversation session. |
 | [LICENSE](../LICENSE) | Repository license terms. | Redistributing the project. |

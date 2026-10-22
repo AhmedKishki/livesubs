@@ -34,13 +34,18 @@ import unicodedata
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
+from typing import Protocol
 
 __all__ = [
     "Alignment",
+    "LanguageCheck",
     "NumberReport",
     "SessionReport",
+    "Turn",
+    "check_languages",
     "chrf_corpus",
     "chrf_sentence",
+    "guess_language",
     "identical_to_source_fraction",
     "length_ratio",
     "normalise",
@@ -533,3 +538,146 @@ def wer_on_numbers(reference: str, hypothesis: str) -> Alignment | None:
     if not ref_numbers:
         return None
     return wer(ref_numbers, tokenise_numbers(hypothesis))
+
+
+# --- a conversation: which language each line is in ---------------------------------
+#
+# A conversation's speakers switch between English and German, so the question for every
+# subtitle line is whether it is in the language it should be. Function words answer it
+# without a model: they are the most frequent words of each language, and a line of a few
+# words almost always has some. Words both languages use, such as "in", "so" and "was",
+# are in neither list.
+
+_FUNCTION_WORDS: dict[str, frozenset[str]] = {
+    "en": frozenset(
+        (
+            "the", "and", "is", "are", "of", "to", "it", "that", "this", "with",
+            "for", "you", "he", "she", "we", "they", "not", "be", "have", "has",
+            "had", "at", "on", "but", "his", "her", "from", "or", "as", "by", "would",
+            "could", "there", "what", "which", "all", "been", "were", "my", "me",
+            "him", "them", "their", "its", "do", "does", "did", "no", "yes",
+        )
+    ),
+    "de": frozenset(
+        (
+            "der", "die", "das", "und", "ist", "sind", "nicht", "ich", "sie", "er",
+            "es", "wir", "ihr", "ein", "eine", "einen", "einem", "einer", "zu", "mit",
+            "auf", "für", "von", "den", "dem", "des", "sich", "auch", "als", "wie",
+            "aber", "oder", "dass", "noch", "nur", "schon", "wenn", "hat", "haben",
+            "wird", "werden", "mir", "mich", "ihm", "ihn", "sein", "seine", "seinen",
+            "nach", "bei", "aus", "um", "ja", "nein",
+        )
+    ),
+}
+
+
+def guess_language(text: str) -> str | None:
+    """``en``, ``de`` or ``ar`` for a subtitle line, or ``None`` when it is too short to tell."""
+
+    letters = [char for char in text if char.isalpha()]
+    if not letters:
+        return None
+    arabic = sum(1 for char in letters if "\u0600" <= char <= "\u06ff")
+    if arabic * 2 > len(letters):
+        return "ar"
+
+    words = re.findall(r"[^\W\d_]+", text.lower())
+    hits = {
+        code: sum(word in vocabulary for word in words)
+        for code, vocabulary in _FUNCTION_WORDS.items()
+    }
+    best = max(hits, key=hits.__getitem__)
+    if hits[best] == 0 or list(hits.values()).count(hits[best]) > 1:
+        return None
+    return best
+
+
+@dataclass(frozen=True, slots=True)
+class Turn:
+    """One stretch of a test conversation, in one spoken language, on the audio clock."""
+
+    language: str
+    start_ms: int
+    end_ms: int
+
+
+class _Line(Protocol):
+    start_ms: int
+    end_ms: int
+    text: str
+
+
+@dataclass(slots=True)
+class LanguageCheck:
+    """How one subtitle file of a conversation kept to its language."""
+
+    name: str
+    cues: int = 0
+    #: Lines too short for :func:`guess_language` to tell.
+    unknown: int = 0
+    #: ``(cue, expected language, guessed language)`` for every line in the wrong one.
+    wrong: list[tuple[_Line, str, str]] = field(default_factory=list)
+    #: Indexes of the turns that produced no line in this file at all.
+    silent_turns: list[int] = field(default_factory=list)
+
+    def format_text(self, turns: Sequence[Turn]) -> str:
+        summary = (
+            f"{self.name}: {self.cues} lines, {len(self.wrong)} in the wrong language, "
+            f"{self.unknown} too short to tell"
+        )
+        lines = [summary]
+        for cue, expected, guessed in self.wrong:
+            lines.append(
+                f"  {_clock(cue.start_ms)} expected {expected}, read {guessed}: {cue.text}"
+            )
+        for index in self.silent_turns:
+            turn = turns[index]
+            span = f"{_clock(turn.start_ms)}-{_clock(turn.end_ms)}"
+            lines.append(f"  turn {index} ({turn.language}, {span}) has no line")
+        return "\n".join(lines)
+
+
+def check_languages(
+    name: str, cues: Sequence[_Line], turns: Sequence[Turn], *, expected: str | None
+) -> LanguageCheck:
+    """Check one subtitle file of a conversation against the turns it was made from.
+
+    A target file has one ``expected`` language throughout. The transcript has none: each
+    of its lines is held to the language of the turn it overlaps most, so a recogniser
+    that wrote English words for German speech shows up here.
+    """
+
+    check = LanguageCheck(name=name, cues=len(cues))
+    heard: set[int] = set()
+
+    for cue in cues:
+        index = _turn_of(cue, turns)
+        if index is not None:
+            heard.add(index)
+        wanted = expected
+        if wanted is None and index is not None:
+            wanted = turns[index].language
+        guessed = guess_language(cue.text)
+        if guessed is None:
+            check.unknown += 1
+        elif wanted is not None and guessed != wanted:
+            check.wrong.append((cue, wanted, guessed))
+
+    check.silent_turns = [index for index in range(len(turns)) if index not in heard]
+    return check
+
+
+def _turn_of(cue: _Line, turns: Sequence[Turn]) -> int | None:
+    """The turn a line overlaps most, or ``None`` for a line in a gap between turns."""
+
+    best, overlap = None, 0
+    for index, turn in enumerate(turns):
+        shared = min(cue.end_ms, turn.end_ms) - max(cue.start_ms, turn.start_ms)
+        if shared > overlap:
+            best, overlap = index, shared
+    return best
+
+
+def _clock(ms: int) -> str:
+    seconds = ms // 1000
+    return f"{seconds // 60:02d}:{seconds % 60:02d}"
