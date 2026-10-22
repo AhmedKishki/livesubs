@@ -84,8 +84,10 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=sorted(MODES),
         default=None,
         help=(
-            "the language the presenter speaks: en (listeners read German or Arabic) or "
-            "de (listeners read English or Arabic); default: session.speaker, then en"
+            "the language the presenter speaks: en (listeners read German or Arabic), "
+            "de (listeners read English or Arabic), or en+de for a conversation that switches "
+            "between them (listeners read English, German or Arabic); default: "
+            "session.speaker, then en"
         ),
     )
     parser.add_argument(

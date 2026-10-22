@@ -34,6 +34,12 @@ and the next result then starts from empty. That is ``kind="final"``. ``speech_f
 speaker stopping, and travels separately. Collapsing the two either cut segments at every
 chunk or, when ``is_final`` was ignored, left nothing to say that a span would not change.
 
+**A conversation is one ``multi`` stream.** Nova-3 recognises speakers who switch
+between some languages, English and German among them, in a single stream. Deepgram's
+code-switching guide asks for 100 ms endpointing there, against a default of 10 ms, so a
+conversation gets that unless the deployment chose a value. A conversation in a language the
+model cannot switch into is refused before any socket opens.
+
 **A transport that dies ends the event stream.** The pipeline learns a recogniser is gone
 only because its events stop. Marking the adapter unhealthy and then waiting for ever left a
 dropped socket silent for the rest of the lecture.
@@ -50,6 +56,7 @@ from typing import Any
 
 from livesubs.asr.base import AsrConfig, AsrEvent
 from livesubs.events import WordTiming
+from livesubs.languages import spoken as spoken_languages
 
 __all__ = ["DEFAULT_URL", "DeepgramAsr"]
 
@@ -70,6 +77,13 @@ _STALE_AFTER_S = 12.0
 #: below the pipeline's own flush grace (``pipeline._FLUSH_GRACE_S``, 0.5 s), or the
 #: utterance that was open when the audio stopped is lost.
 _FLUSH_GRACE_S = 0.4
+
+#: The languages ``language=multi`` switches between, from Deepgram's models and languages
+#: overview (checked 2026-10-23). Flux's multilingual model lists the same ten.
+_CODE_SWITCHING = frozenset({"en", "es", "fr", "de", "hi", "ru", "pt", "ja", "it", "nl"})
+
+#: The endpointing Deepgram's code-switching guide recommends, in milliseconds.
+_CODE_SWITCHING_ENDPOINTING_MS = 100
 
 
 class DeepgramAsr:
@@ -137,9 +151,19 @@ class DeepgramAsr:
         speech-recognition problem.
         """
 
+        spoken = spoken_languages(cfg.language)
+        conversation = self.language is None and len(spoken) > 1
+        if conversation:
+            unswitchable = [code for code in spoken if code not in _CODE_SWITCHING]
+            if unswitchable:
+                raise ValueError(
+                    f"Deepgram cannot switch between {', '.join(spoken)} in one stream: "
+                    f"{', '.join(unswitchable)} is not in its multilingual model"
+                )
+
         params = [
             ("model", self.model),
-            ("language", self.language or cfg.language),
+            ("language", self.language or ("multi" if conversation else cfg.language)),
             ("encoding", "linear16"),
             ("sample_rate", str(cfg.sample_rate)),
             ("channels", str(cfg.channels)),
@@ -148,8 +172,11 @@ class DeepgramAsr:
             ("smart_format", "true"),
         ]
 
-        if self.endpointing_ms is not None:
-            params.append(("endpointing", str(self.endpointing_ms)))
+        endpointing = self.endpointing_ms
+        if endpointing is None and conversation:
+            endpointing = _CODE_SWITCHING_ENDPOINTING_MS
+        if endpointing is not None:
+            params.append(("endpointing", str(endpointing)))
 
         # Nova-3's vocabulary hints. Repeated rather than comma-joined, which is how the
         # API documents them.
@@ -164,9 +191,13 @@ class DeepgramAsr:
 
         import websockets
 
+        # Built before connecting, so a conversation Deepgram cannot recognise is refused
+        # as the configuration mistake it is rather than reported as a failed connection.
+        uri = self._uri(cfg)
+
         try:
             self._socket = await websockets.connect(
-                self._uri(cfg),
+                uri,
                 additional_headers={"Authorization": f"Token {self.api_key}"},
                 open_timeout=self.connect_timeout_s,
                 max_size=None,

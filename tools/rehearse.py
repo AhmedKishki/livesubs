@@ -166,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--speaker",
         default=None,
-        help="the language the audio is in, en or de; the configured speaker when omitted",
+        help="the language the audio is in, en, de or en+de; the configured speaker when omitted",
     )
     parser.add_argument(
         "--player",

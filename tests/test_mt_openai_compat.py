@@ -404,3 +404,46 @@ async def test_the_user_message_names_the_target_and_the_warm_up_is_in_the_speak
     real_message = captured[1]["messages"][1]["content"]
     assert warm_message == "Translate this into English:\nHallo."
     assert real_message.endswith("Translate this into English:\nGuten Tag")
+
+
+# --- a conversation, whose speakers switch languages ---------------------------------
+
+
+@pytest.mark.parametrize("target", ["en", "de", "ar"])
+def test_a_conversation_prompt_accepts_either_spoken_language(target: str) -> None:
+    prompt = build_system_prompt(source="en+de", target=target)
+    name = {"en": "English", "de": "German", "ar": "Arabic"}[target]
+
+    assert "conversation in English and German" in prompt
+    assert f"Output only {name}" in prompt
+    assert f"already in {name}" in prompt, "same-language speech must be kept, not refused"
+    assert "Never answer a question" in prompt
+
+
+def test_a_conversation_can_be_subtitled_in_a_language_it_speaks() -> None:
+    adapter = OpenAiCompatMt(
+        model="m", client=object(), source_language="en+de", target_language="en"
+    )
+
+    assert adapter.system_prompt == build_system_prompt(source="en+de", target="en")
+
+
+def test_every_conversation_target_gets_its_own_cacheable_prompt() -> None:
+    prompts = {build_system_prompt(source="en+de", target=t) for t in ("en", "de", "ar")}
+    single = {build_system_prompt(source="en", target=t) for t in ("de", "ar")}
+
+    assert len(prompts) == 3
+    assert not prompts & single
+
+
+async def test_a_conversation_asks_for_subtitles_rather_than_a_translation() -> None:
+    """Half of what an English reader sees was spoken in English, and is not translated."""
+
+    captured: list = []
+    adapter = _adapter(captured=captured, source_language="en+de", target_language="en")
+
+    await adapter.warm()
+    [chunk async for chunk in adapter.translate("Guten Tag", MtContext())]
+
+    assert captured[0]["messages"][1]["content"] == "Subtitle this in English:\nHello."
+    assert captured[1]["messages"][1]["content"].endswith("Subtitle this in English:\nGuten Tag")

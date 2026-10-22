@@ -20,8 +20,10 @@ __all__ = ["AsrConfig", "AsrEvent", "AsrProvider", "Seekable"]
 class AsrConfig:
     """Everything an adapter needs to open a stream.
 
-    ``language`` is the SOURCE language, the one the speaker uses. Whatever the listeners
-    read is the MT adapter's business, not this one's.
+    ``language`` is the SOURCE language, the one the speaker uses, or every language of a
+    conversation joined by ``+`` (``en+de``) when speakers switch between them. An adapter
+    that cannot recognise a conversation in one stream refuses it at ``open``. Whatever the
+    listeners read is the MT adapter's business, not this one's.
     """
 
     language: str = "en"

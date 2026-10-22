@@ -624,6 +624,17 @@ def test_a_pipeline_needs_a_translator_and_cannot_translate_into_the_speakers_la
         )
 
 
+def test_a_conversation_can_be_subtitled_in_the_languages_it_speaks() -> None:
+    pipeline = LivePipeline(
+        source=SpeechLikeSource(),
+        asr=StubAsr(),
+        translators={"en": PassthroughMt(), "de": PassthroughMt()},
+        source_language="en+de",
+    )
+
+    assert pipeline.supported_languages == ("en", "de")
+
+
 # --- committed segments, which become transcripts ---------------------------------
 
 

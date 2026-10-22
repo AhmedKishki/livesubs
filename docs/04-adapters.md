@@ -29,6 +29,7 @@ class AsrProvider(Protocol):
 ```
 
 - `push` takes raw 16 kHz mono s16le PCM. Adapters handle their own framing and transport.
+- `AsrConfig.language` is the speaker's language, or a conversation's languages joined by `+`, such as `en+de`. An adapter that cannot recognise a conversation in one stream refuses it in `open`, before any audio is sent.
 - `words` may be `None`. Deepgram supplies word timings. OpenAI's live transcription models do not, and must not be assumed to.
 - Only Deepgram has a built ASR adapter. OpenAI is registered as planned: it can hold a key and satisfies nothing, so a key for it alone does not pass `--check`.
 - `partial` events replace each other for the current span. `final` settles the span: its text will not change, and the next event starts a new span instead of repeating it. A chunked provider such as Deepgram settles several spans inside one utterance.
@@ -62,10 +63,11 @@ class MtProvider(Protocol):
 - `translate` raises `MtError` when the request fails, including after some deltas. It never ends normally on a partial translation, because only the pipeline knows what a viewer has already been shown.
 - Any OpenAI-compatible endpoint is accepted for MT when the provider declares `options.adapter: openai_compat`. Without that declaration the provider is refused rather than guessed at.
 - The OpenAI-compatible adapter builds its prompt from the speaker's language and the target language. The language names come from [languages.py](../src/livesubs/languages.py), and the German target keeps the exact prompt text recorded in `tests/fixtures/prompts_v1.json`, so its provider cache prefix does not change.
+- A conversation has its own prompt for each target. It accepts English, German or a mixture, and keeps speech that is already in the target language. Its requests ask for subtitles in the target, not a translation.
 
 ## Session modes
 
-- The speaker language selects the mode. An English speaker has the targets `de` and `ar`, and a German speaker has the targets `en` and `ar`. The first target is the default.
+- The speaker language selects the mode. An English speaker has the targets `de` and `ar`, a German speaker has the targets `en` and `ar`, and an English/German conversation, `en+de`, has the targets `en`, `de` and `ar`. The first target is the default.
 - `session.targets` can narrow a mode to some of its targets, in order. A target outside the mode is rejected at startup.
 - A publisher declares the languages it can produce with `supported_languages`. The session offers the mode's targets that the publisher can produce. A publisher that declares nothing is offered the default target only.
 - The live pipeline takes one translator per target as a mapping from language code to provider or provider factory. A factory is called only when that language first has viewer demand.

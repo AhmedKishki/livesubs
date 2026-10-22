@@ -194,6 +194,7 @@ async def replay(
 
     ``mode`` says who is speaking and which languages listeners read: the speaker's lines
     are the source, and every target gets its own stream. Without one, an English speaker.
+    A conversation takes its spoken languages in turn, one line each.
     """
 
     mode = mode or MODES["en"]
@@ -223,7 +224,7 @@ async def replay(
     while True:
         for offset, seg in enumerate(segments):
             seq = completed + offset
-            src = seg.final[mode.source]
+            src = seg.final[mode.spoken[seq % len(mode.spoken)]]
 
             # Draft first: this is the state the attendee sees while MT is still
             # streaming, and the state the overlay must make look provisional.

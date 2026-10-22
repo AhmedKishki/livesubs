@@ -231,6 +231,15 @@ def test_a_german_speaker_is_offered_english_first(clean_env: None) -> None:
     assert resolved.default_language == "en"
 
 
+def test_a_conversation_is_offered_english_first(clean_env: None) -> None:
+    resolved = Settings(_env_file=None, session={"speaker": "en+de"})
+
+    assert resolved.source_language == "en+de"
+    assert resolved.target_languages == ("en", "de", "ar")
+    assert resolved.default_language == "en"
+    assert resolved.validate_for_startup(require_credentials=False) == []
+
+
 def test_the_speaker_can_be_set_from_the_environment(
     clean_env: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:

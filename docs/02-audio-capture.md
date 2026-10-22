@@ -172,6 +172,7 @@ demo-20260922-150745.en.vtt
 - `capture.subtitles` enables the subtitle writer.
 - Each target language that someone read has its own `.{code}.srt` and `.{code}.vtt` pair on the same audio clock, for example `.ar.srt`. The speaker's words are written once per segment, by whichever translation of it arrives first, so a session that only Arabic viewers read still produces the source file.
 - For a German speaker the source file is `.de.srt` and the targets are `.en` and `.ar`.
+- For a conversation the source file is `.en+de.srt`, holding what was said in either language, and the targets are `.en`, `.de` and `.ar`.
 - SRT and WebVTT are both produced because different tools consume them. Both come from one cue model, so they cannot disagree about timings.
 | Mode | English sidecar | MT sidecar |
 | --- | --- | --- |

@@ -390,3 +390,17 @@ async def test_a_sessions_own_announcement_is_not_overwritten_by_the_replays() -
 
     assert hub.latest_hello is not None
     assert hub.latest_hello.session_name == "Physik I"
+
+
+async def test_a_conversation_alternates_its_spoken_languages() -> None:
+    mode = mode_for("en+de")
+    messages = [m async for m in replay("default", mode=mode, speed=0)]
+    segments = [m.data for m in messages if isinstance(m, SegmentMessage)]
+    hello = messages[0].data
+
+    assert (hello.source, hello.targets) == ("en+de", ["en", "de", "ar"])
+    assert {s.language for s in segments} == {"en", "de", "ar"}
+    finals = {(s.seq, s.language): s for s in segments if s.state == "final"}
+    assert finals[(0, "de")].src == "Today we will look at damped oscillations."
+    assert finals[(1, "en")].src == "Die Amplitude nimmt mit der Zeit exponentiell ab."
+    assert finals[(1, "en")].text == "The amplitude decreases exponentially over time."

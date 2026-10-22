@@ -23,15 +23,37 @@ def test_a_german_speaker_reaches_english_by_default_and_arabic_on_request() -> 
     assert mode.default_target == "en"
 
 
-def test_a_speaker_is_never_offered_their_own_language() -> None:
+def test_a_single_speaker_is_never_offered_their_own_language() -> None:
     for mode in MODES.values():
-        assert mode.source not in mode.targets
+        if not mode.is_conversation:
+            assert mode.source not in mode.targets
 
 
 def test_every_language_a_mode_mentions_is_registered() -> None:
     for mode in MODES.values():
-        for code in (mode.source, *mode.targets):
+        for code in (*mode.spoken, *mode.targets):
             assert code in LANGUAGES
+
+
+def test_a_conversation_offers_english_first_then_german_and_arabic() -> None:
+    mode = mode_for("en+de")
+
+    assert mode.spoken == ("en", "de")
+    assert mode.is_conversation
+    assert mode.targets == ("en", "de", "ar")
+    assert mode.default_target == "en"
+
+
+def test_a_single_speaker_speaks_one_language() -> None:
+    assert mode_for("de").spoken == ("de",)
+    assert not mode_for("de").is_conversation
+
+
+def test_a_conversation_can_be_narrowed_but_not_widened() -> None:
+    assert mode_for("en+de", ["de", "en"]).targets == ("de", "en")
+    assert mode_for("en+de", ["de", "en"]).spoken == ("en", "de")
+    with pytest.raises(ValueError, match="cannot be a target"):
+        mode_for("en+de", ["fr"])
 
 
 def test_a_mode_can_be_narrowed_to_some_of_its_targets() -> None:
@@ -76,6 +98,9 @@ def test_arabic_is_right_to_left_and_the_others_are_not() -> None:
 def test_a_label_names_both_sides() -> None:
     assert mode_for("en").label == "English speaker, German or Arabic subtitles"
     assert mode_for("de").label == "German speaker, English or Arabic subtitles"
+    assert mode_for("en+de").label == (
+        "English and German conversation, English, German or Arabic subtitles"
+    )
 
 
 def test_the_picker_shows_each_language_in_itself() -> None:

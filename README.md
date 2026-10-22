@@ -42,8 +42,8 @@ livesubs
 2. Enter your [Deepgram](https://console.deepgram.com/) and [DeepSeek](https://platform.deepseek.com/api_keys) API keys when prompted. They are saved for later sessions.
 3. Speak into the microphone while startup checks the signal.
 4. Open the printed landing-page URL and display its QR code.
-5. Attendees join the same network and scan the code. The default subtitle language is German for an English speaker and English for a German speaker. Attendees choose another language, such as **العربية** for Arabic, in the viewer's **Aa** settings.
+5. Attendees join the same network and scan the code. The default subtitle language is German for an English speaker and English for a German speaker or a conversation. Attendees choose another language, such as **العربية** for Arabic, in the viewer's **Aa** settings.
 
-The session assumes an English speaker. For a German speaker, start it with `livesubs --speaker de`.
+The session assumes an English speaker. For a German speaker, start it with `livesubs --speaker de`. For a conversation that switches between English and German, start it with `livesubs --speaker en+de`.
 
 Transcription is shared between languages. Each translation runs only while someone requests that language, and all paid processing pauses when the last viewer disconnects. Keep the terminal running during the session. Press Ctrl-C to stop.

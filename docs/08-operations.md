@@ -16,7 +16,7 @@ livesubs --serve --approach live --audio pw:TARGET
 ```
 
 - A direct `--serve` invocation skips the interactive picker and startup probes.
-- The speaker language selects the mode: `--speaker en` (the default) serves German and Arabic listeners, and `--speaker de` serves English and Arabic listeners. `LIVESUBS_SESSION_SPEAKER` and `session.speaker` set the same thing, and `session.targets` narrows the offered languages.
+- The speaker language selects the mode: `--speaker en` (the default) serves German and Arabic listeners, `--speaker de` serves English and Arabic listeners, and `--speaker en+de` serves a conversation that switches between English and German, with English, German and Arabic listeners. `LIVESUBS_SESSION_SPEAKER` and `session.speaker` set the same thing, and `session.targets` narrows the offered languages.
 
 ```bash
 livesubs --speaker de
@@ -188,7 +188,7 @@ sudo ufw allow 8000/tcp comment 'livesubs'
 - The tool starts the server, waits for its readiness log, then starts the player. This reduces manual timing error after provider startup, but is not sample-accurate audio synchronisation.
 - Ctrl-C stops the player and the server together. The server sets `PR_SET_PDEATHSIG`, so it dies with the tool. The player does not, so a player can survive a `SIGKILL` of the tool, and it exits at the end of the file.
 - `--no-play` runs without sound.
-- `--speaker de` rehearses a German speaker.
+- `--speaker de` rehearses a German speaker, and `--speaker en+de` rehearses a conversation.
 - `--player` takes any command containing `{file}`.
 - The default player is the first available of `gst-play-1.0`, `pw-play` and `aplay`, so one of them must be installed for sound.
 

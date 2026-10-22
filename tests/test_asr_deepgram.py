@@ -484,3 +484,42 @@ def test_an_explicit_language_option_overrides_the_mode() -> None:
     uri = DeepgramAsr(api_key="k", language="de-CH")._uri(AsrConfig(language="de"))
 
     assert "language=de-CH" in uri
+
+
+def test_a_single_speaker_leaves_endpointing_to_deepgram() -> None:
+    uri = DeepgramAsr(api_key="k")._uri(AsrConfig(language="de"))
+
+    assert "endpointing" not in uri
+
+
+def test_a_conversation_opens_one_code_switching_stream() -> None:
+    """Deepgram's ``multi`` recognises English and German in one stream, and its
+    code-switching guide asks for 100 ms endpointing where the default is 10 ms."""
+
+    uri = DeepgramAsr(api_key="k")._uri(AsrConfig(language="en+de"))
+
+    assert "language=multi" in uri
+    assert "endpointing=100" in uri
+    assert "model=nova-3" in uri
+
+
+def test_a_conversation_keeps_an_explicit_endpointing_setting() -> None:
+    uri = DeepgramAsr(api_key="k", endpointing_ms=300)._uri(AsrConfig(language="en+de"))
+
+    assert "endpointing=300" in uri
+    assert "endpointing=100" not in uri
+
+
+def test_a_conversation_deepgram_cannot_switch_between_is_refused() -> None:
+    """Arabic is not in Deepgram's code-switching set, so the stream would be wrong."""
+
+    with pytest.raises(ValueError, match="ar"):
+        DeepgramAsr(api_key="k")._uri(AsrConfig(language="en+ar"))
+
+
+async def test_an_unswitchable_conversation_fails_at_open_without_a_socket() -> None:
+    asr = DeepgramAsr(api_key="k")
+
+    with pytest.raises(ValueError, match="ar"):
+        await asr.open(AsrConfig(language="en+ar"))
+    assert not asr.healthy

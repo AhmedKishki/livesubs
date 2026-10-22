@@ -322,5 +322,5 @@ async def running(pipeline: LivePipeline, hub: Hub, *, timeout: float = 6.0):
 
 #: The two modes the pipeline serves, as ``(speaker, targets)``. Behaviour that does not
 #: depend on the language is tested under both, so nothing is true only for German.
-MODES = [("en", ("de", "ar")), ("de", ("en", "ar"))]
-MODE_IDS = ["english-speaker", "german-speaker"]
+MODES = [("en", ("de", "ar")), ("de", ("en", "ar")), ("en+de", ("en", "de"))]
+MODE_IDS = ["english-speaker", "german-speaker", "conversation"]

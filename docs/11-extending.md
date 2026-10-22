@@ -104,9 +104,9 @@ def alive(self) -> bool: ...
 ## Languages and modes
 
 - A language is an entry in `LANGUAGES` in `src/livesubs/languages.py`: its code, English name, native name, prompt wording and direction. The code is the one used on the wire, in the `viewer_<code>` role, in `?lang=` and in provider requests.
-- A mode is an entry in `MODES` in the same file: the speaker's language and the ordered targets. The first target is the default viewer's.
+- A mode is an entry in `MODES` in the same file: the speaker's language, or a conversation's languages joined by `+`, and the ordered targets. The first target is the default viewer's.
 - Add a string pack for the language in `web/static/language.js`. Without one the viewer uses English strings and takes the language's name and direction from the session.
-- The ASR provider must support the speaker's language. The MT adapter builds its prompt from the names of the speaker's language and the target, so a new language needs no prompt edit.
+- The ASR provider must support the speaker's language. For a conversation it must recognise all of the conversation's languages in one stream. The MT adapter builds its prompt from the names of the speaker's language and the target, so a new language needs no prompt edit.
 - Add lines for the language to the simulated lecture in `src/livesubs/sim.py`, so `--approach sim` and `tools/check_overlay_layout.py --language CODE` cover it.
 - `tests/test_languages.py` and the tests parametrised over `support.MODES` pick up a new mode. Extend `MODES` in `tests/support.py` to cover it.
 

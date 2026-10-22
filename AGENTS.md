@@ -5,7 +5,7 @@
 ## Constraints
 
 - Keep live microphone capture server-side on Linux with PipeWire. Do not move capture into the browser.
-- Derive the target languages from the speaker language: an English speaker has German and Arabic listeners, and a German speaker has English and Arabic listeners. Keep the default viewer on the mode's first target only. Every other target requires its explicit `viewer_<code>` role. Filter other translations and the source text on the server for each viewer role.
+- Derive the target languages from the speaker language: an English speaker has German and Arabic listeners, a German speaker has English and Arabic listeners, and an English/German conversation (`en+de`) has English, German and Arabic listeners. Keep the default viewer on the mode's first target only. Every other target requires its explicit `viewer_<code>` role. Filter other translations and the source text on the server for each viewer role.
 - Keep paid transcription paused without viewers and each translation paused without demand for its target language.
 - Keep provider transport, types, and exceptions behind the ASR and MT protocols.
 - Reject unavailable live adapters or credentials instead of substituting simulated output.

@@ -90,8 +90,8 @@ async def messages_of(url: str, count: int) -> list[dict]:
 
 
 #: ``(speaker, default language, the optional second language)``.
-MODES = [("en", "de", "ar"), ("de", "en", "ar")]
-MODE_IDS = ["english-speaker", "german-speaker"]
+MODES = [("en", "de", "ar"), ("de", "en", "ar"), ("en+de", "en", "de")]
+MODE_IDS = ["english-speaker", "german-speaker", "conversation"]
 
 
 async def test_an_unknown_session_is_refused_with_a_code_the_client_receives() -> None:

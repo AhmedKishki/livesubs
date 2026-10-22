@@ -1,9 +1,14 @@
 """Languages, and the modes that pair them.
 
 A *mode* says who is speaking and who may listen in what: an English speaker with German
-or Arabic listeners, or a German speaker with English or Arabic listeners. Everything that
-used to assume "English in, German out" asks the session's mode instead, so the pipeline,
-the hub, the wire format and the viewer carry no language of their own.
+or Arabic listeners, a German speaker with English or Arabic listeners, or a conversation
+whose speakers switch between English and German, with English, German or Arabic listeners.
+Everything that used to assume "English in, German out" asks the session's mode instead, so
+the pipeline, the hub, the wire format and the viewer carry no language of their own.
+
+A conversation's ``source`` names every language spoken, joined by ``+``: ``en+de``. Each
+listener still reads one language throughout, whoever is speaking, so every segment goes to
+every listened-to language's translator, including the one it was spoken in.
 
 Language metadata lives here and nowhere else: the name a translation prompt uses, the
 name a viewer sees in its picker, the writing direction. The first target of a mode is the
@@ -27,6 +32,8 @@ __all__ = [
     "Mode",
     "language",
     "mode_for",
+    "names",
+    "spoken",
 ]
 
 
@@ -91,11 +98,27 @@ def language(code: str) -> Language:
         raise ValueError(f"unknown language {code!r}; known: {known}") from None
 
 
+def spoken(source: str) -> tuple[str, ...]:
+    """The languages a mode's ``source`` names: one speaker's, or a conversation's."""
+
+    return tuple(source.split("+"))
+
+
+def names(codes: Sequence[str]) -> str:
+    """Languages by their English names: "English", "English and German"."""
+
+    named = [language(code).name for code in codes]
+    if len(named) < 2:
+        return "".join(named)
+    return f"{', '.join(named[:-1])} and {named[-1]}"
+
+
 @dataclass(frozen=True, slots=True)
 class Mode:
     """Who speaks, and the languages their listeners can read."""
 
-    #: The language the speaker uses, which the recogniser is told to expect.
+    #: What the recogniser is told to expect: the speaker's language, or every language of
+    #: a conversation joined by ``+``.
     source: str
     #: What listeners can choose. The first is the default: what a plain QR scan gets.
     targets: tuple[str, ...]
@@ -105,10 +128,22 @@ class Mode:
         return self.targets[0]
 
     @property
+    def spoken(self) -> tuple[str, ...]:
+        return spoken(self.source)
+
+    @property
+    def is_conversation(self) -> bool:
+        """Whether speakers switch languages, so a segment may be read in the one it was said in."""
+
+        return len(self.spoken) > 1
+
+    @property
     def label(self) -> str:
-        speaker = language(self.source).name
-        listeners = " or ".join(language(code).name for code in self.targets)
-        return f"{speaker} speaker, {listeners} subtitles"
+        speakers = f"{names(self.spoken)} {'conversation' if self.is_conversation else 'speaker'}"
+        listeners = [language(code).name for code in self.targets]
+        if len(listeners) > 1:
+            listeners = [", ".join(listeners[:-1]), listeners[-1]]
+        return f"{speakers}, {' or '.join(listeners)} subtitles"
 
     def narrowed(self, targets: Sequence[str]) -> Mode:
         """The same speaker with fewer listeners' languages, in the order given.
@@ -124,16 +159,19 @@ class Mode:
         extra = [code for code in chosen if code not in self.targets]
         if extra:
             raise ValueError(
-                f"{', '.join(extra)} cannot be a target when the speaker uses "
-                f"{language(self.source).name}; this mode offers {', '.join(self.targets)}"
+                f"{', '.join(extra)} cannot be a target when the speakers use "
+                f"{names(self.spoken)}; this mode offers {', '.join(self.targets)}"
             )
         return Mode(self.source, chosen)
 
 
-#: The supported pairings, keyed by the language the speaker uses.
+#: The supported pairings, keyed by the language the speaker uses, or by a conversation's
+#: languages. The recogniser switches between English and German in one stream but cannot
+#: add Arabic, so Arabic is only ever read.
 MODES: dict[str, Mode] = {
     "en": Mode(source="en", targets=("de", "ar")),
     "de": Mode(source="de", targets=("en", "ar")),
+    "en+de": Mode(source="en+de", targets=("en", "de", "ar")),
 }
 
 

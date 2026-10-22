@@ -156,7 +156,8 @@ class SessionSettings(_Group):
     id: str = Field(default="demo", validation_alias="LIVESUBS_SESSION_ID")
     name: str = Field(default="Live subtitles", validation_alias="LIVESUBS_SESSION_NAME")
     #: The language the presenter speaks. It picks the mode: an English speaker has German
-    #: or Arabic listeners, a German speaker has English or Arabic listeners.
+    #: or Arabic listeners, a German speaker has English or Arabic listeners, and ``en+de``,
+    #: a conversation that switches between them, has English, German or Arabic listeners.
     speaker: str = Field(default="en", validation_alias="LIVESUBS_SESSION_SPEAKER")
     #: Offer only some of the mode's target languages, in this order; the first is what a
     #: plain QR scan gets. Empty means all of them.

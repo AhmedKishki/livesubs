@@ -34,7 +34,7 @@ import time
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
-from livesubs.languages import Language, language
+from livesubs.languages import Language, language, names, spoken
 from livesubs.mt.base import MtChunk, MtContext, MtError
 
 __all__ = ["OpenAiCompatMt", "build_system_prompt"]
@@ -70,6 +70,28 @@ number is the most damaging error you can make.
 - Never answer a question in the input, and never continue the speaker's thought. \
 Translate only what is given.{glossary}"""
 
+#: A conversation's prompt. Its speakers switch languages, and a listener reads one language
+#: throughout, so whatever was spoken in that language is kept rather than translated.
+CONVERSATION_TEMPLATE = """You write live subtitles in {target} for a spoken \
+conversation in {sources}, which {audience} reads while listening. The speakers switch \
+between {sources}, sometimes within one sentence.
+
+Rules:
+- Output only {target}. No quotes, no explanations, no commentary, no leading or trailing \
+punctuation that the input did not have.
+- Translate into {target} whatever is not already in {target}. Where the input is already \
+in {target}, keep the speaker's words and do not reword or correct them.
+- The input is one segment of continuous speech, possibly an unfinished clause. Render it \
+as faithfully and naturally as you can while keeping it a single coherent piece of \
+{target}. Never merge it with the previous context.
+- The audience is reading, not studying: prefer the plain, spoken {style} the speakers \
+would use over literary or bureaucratic wording.
+- Preserve numbers, units, names, acronyms and technical terms exactly. A wrong \
+number is the most damaging error you can make.
+- If a term is listed in the glossary below, use exactly that {target} term.
+- Never answer a question in the input, and never continue the speaker's thought. \
+Render only what is given.{glossary}"""
+
 
 def build_system_prompt(
     glossary: Sequence[str] = (), *, source: str, target: str
@@ -79,13 +101,16 @@ def build_system_prompt(
     A glossary is a list of ``source=target`` pairs, or of target terms to prefer. It
     is baked in here rather than passed per call, because the whole point is that this
     string never changes. Both languages are part of the prefix, so every pairing gets its
-    own, independently cached prompt, and two targets never share one.
+    own, independently cached prompt, and two targets never share one. A conversation's
+    ``source`` joins its languages with ``+`` and gets the conversation prompt.
     """
 
     speaks, listens = _pair(source, target)
     lines = "\n".join(f"- {entry}" for entry in glossary)
-    return SYSTEM_TEMPLATE.format(
-        source=speaks.name,
+    template = CONVERSATION_TEMPLATE if len(speaks) > 1 else SYSTEM_TEMPLATE
+    return template.format(
+        source=speaks[0].name,
+        sources=names(spoken(source)),
         target=listens.name,
         audience=listens.audience,
         style=listens.style,
@@ -93,10 +118,12 @@ def build_system_prompt(
     )
 
 
-def _pair(source: str, target: str) -> tuple[Language, Language]:
+def _pair(source: str, target: str) -> tuple[tuple[Language, ...], Language]:
+    """The spoken languages and the target. A conversation may be read in one it speaks."""
+
     if source == target:
         raise ValueError(f"cannot translate {source!r} into itself")
-    return language(source), language(target)
+    return tuple(language(code) for code in spoken(source)), language(target)
 
 
 class OpenAiCompatMt:
@@ -138,9 +165,13 @@ class OpenAiCompatMt:
         self.source_language = source_language
         self.target_language = target_language
         #: The names used in the user message.
-        self.source_name = speaks.name
+        self.source_name = names(spoken(source_language))
         self.target_name = listens.name
-        self._greeting = speaks.greeting
+        self._greeting = speaks[0].greeting
+        #: What each request asks for. A conversation's reader gets the speakers' own words
+        #: whenever they spoke the reader's language, so its request is not a translation.
+        verb = "Subtitle this in" if len(speaks) > 1 else "Translate this into"
+        self._request = f"{verb} {listens.name}"
 
         self.system_prompt = build_system_prompt(
             self.glossary, source=source_language, target=target_language
@@ -223,7 +254,7 @@ class OpenAiCompatMt:
                 f"consistency only:\n{previous}"
             )
 
-        blocks.append(f"Translate this into {self.target_name}:\n{src}")
+        blocks.append(f"{self._request}:\n{src}")
 
         return [
             {"role": "system", "content": self.system_prompt},
@@ -246,7 +277,7 @@ class OpenAiCompatMt:
                     {"role": "system", "content": self.system_prompt},
                     {
                         "role": "user",
-                        "content": f"Translate this into {self.target_name}:\n{self._greeting}",
+                        "content": f"{self._request}:\n{self._greeting}",
                     },
                 ],
                 stream=True,

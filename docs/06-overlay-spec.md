@@ -98,7 +98,7 @@ MIN_VISIBLE_MS = 800                                   // when it may be REPLACE
 | language | any language the session offers | URL, not local storage |
 | fullscreen | button | no |
 
-- Defaults are the session's first target language with the box backdrop: German for an English speaker, English for a German speaker.
+- Defaults are the session's first target language with the box backdrop: German for an English speaker, English for a German speaker or a conversation.
 - Another language uses `?lang=<code>`, for example `?lang=ar`. The page reads the offered languages, their names and their direction from `/api/session`, and builds the picker from them. The picker is absent when the session offers one language.
 - The overlay renders segments of its own language only and ignores the rest before applying pacing. A page whose `hello` names a different language than the page asked for reloads once, because the server restarted in another mode.
 - A language the session does not offer shows an "unavailable" notice in that language and opens no socket. The picker stays available.

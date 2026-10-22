@@ -25,8 +25,8 @@ TICK_S = 0.05
 
 
 #: ``(speaker, default language, optional language)`` for each mode.
-MODES = [("en", "de", "ar"), ("de", "en", "ar")]
-MODE_IDS = ["english-speaker", "german-speaker"]
+MODES = [("en", "de", "ar"), ("de", "en", "ar"), ("en+de", "en", "de")]
+MODE_IDS = ["english-speaker", "german-speaker", "conversation"]
 
 
 class TickingPublisher:

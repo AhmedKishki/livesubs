@@ -63,8 +63,10 @@ function makeAdminView(session) {
   const names = Object.fromEntries((session.targets ?? []).map((t) => [t.code, t.name]));
   const nameOf = (code) => names[code] ?? code.toUpperCase();
 
+  // A conversation's source names every language spoken, joined by "+".
+  const source = (session.source ?? "").toUpperCase();
   $("mode").textContent =
-    `${(session.source ?? "").toUpperCase()} speaker → ` +
+    `${source} ${source.includes("+") ? "conversation" : "speaker"} → ` +
     session.languages.map((code) => nameOf(code)).join(", ");
 
   // One row per language, in the order the session offers them, each labelled with the

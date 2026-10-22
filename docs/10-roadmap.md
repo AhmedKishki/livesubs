@@ -31,6 +31,9 @@
 
 - Measure recognition, translation quality and cost for a German speaker and for Arabic subtitles. Only English-to-German has corpus measurements.
 - Have a reader of Arabic review the Arabic prompt, the simulated Arabic lines and the Arabic viewer strings. No such review is recorded.
+- Measure an English/German conversation: words lost around a language switch, lines in the wrong language, translation accuracy, and median and 95th-percentile delay. No conversation has been measured.
+- Compare passing same-language speech through untranslated with translating every segment. In a `multi` stream Deepgram labels each word's language, and the adapter discards the labels. Passthrough would send a transcript to the viewers of its language, so it needs the AGENTS.md rule on source text changed.
+- Compare Deepgram's `flux-general-multi` with Nova-3 `multi` for conversations. Flux detects the end of a turn itself, but it uses a different endpoint and event format, so it needs its own adapter.
 
 ## Deployment
 
