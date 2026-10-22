@@ -9,6 +9,7 @@ is no resampling, so any difference at all is a bug.
 from __future__ import annotations
 
 import asyncio
+import time
 import wave
 from pathlib import Path
 
@@ -202,6 +203,28 @@ async def test_realtime_pacing_is_optional_but_real(tmp_path: Path) -> None:
     elapsed = asyncio.get_running_loop().time() - started
 
     assert 0.05 < elapsed < 2.0, f"five frames should take about 0.1 s, took {elapsed:.3f} s"
+
+
+async def test_a_real_time_replay_keeps_to_the_clock_behind_a_slow_consumer(
+    tmp_path: Path,
+) -> None:
+    """A microphone does not slow down for the pipeline, and a replay must not either.
+
+    Pacing each frame by a fixed sleep added the consumer's own time to every frame, so a
+    replay fell behind the wall clock and the latency it reported grew by about 3 s in two
+    minutes of audio with no real delay behind it.
+    """
+
+    path = write_wav(tmp_path / "second.wav", np.zeros(16_000, dtype="<i2"))
+    source = WavFileSource(path, speed=1.0)
+
+    started = asyncio.get_running_loop().time()
+    async for _ in source.frames():
+        # Ten milliseconds of work per frame: half of each frame's real-time budget.
+        time.sleep(0.010)  # noqa: ASYNC251 - blocking on purpose, as CPU work would
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert elapsed < 1.2, f"one second of audio took {elapsed:.2f} s to replay"
 
 
 # --- failing fast ---------------------------------------------------------------

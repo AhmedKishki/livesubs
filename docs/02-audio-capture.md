@@ -56,6 +56,7 @@ uv run livesubs --serve --approach live-sim --audio 'pw:YOUR_PIPEWIRE_NODE_NAME'
 - Synthetic sources provide silence, a steady tone and speech-like audio for tests without capture hardware.
 - A backend is chosen with one `--audio` value: `synth`, `file:PATH[@SPEED]` or `pw:TARGET`.
 - File replay uses `@1` for real time, `@2` for twice speed and `@0` for unpaced processing.
+- A paced replay keeps to the wall clock from its first frame. A consumer that falls behind receives the overdue frames at once, as it would from a microphone's buffer, so the latency measured on a replay does not grow with its length.
 
 ## The capture command
 

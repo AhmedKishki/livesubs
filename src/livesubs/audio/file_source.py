@@ -131,10 +131,16 @@ class WavFileSource:
     async def frames(self) -> AsyncIterator[AudioFrame]:
         """Yield frames until the file ends, or for ever if looping."""
 
-        # Pacing is per frame rather than against an absolute deadline: a file
-        # source replaying faster or slower than real time is not a clock anyone
-        # measures latency against, and the pipeline takes its clock from the audio.
-        interval = (self.frame_ms / 1000.0) / self.speed if self.speed > 0 else 0.0
+        # Paced against a deadline counted from the first frame, not by a fixed sleep
+        # after each one. A microphone delivers audio in real time whatever the pipeline
+        # is doing, and the pipeline's latency is the wall clock minus the audio clock. A
+        # fixed sleep added the consumer's own time to every frame, so a replay fell
+        # behind the wall clock and the latency it reported grew with its length. A
+        # consumer that falls behind now gets the overdue frames at once, as it would
+        # from a microphone's buffer.
+        clock = asyncio.get_running_loop()
+        started: float | None = None
+        played = 0
 
         while not self._closed:
             with wave.open(str(self.path), "rb") as wav:
@@ -142,15 +148,19 @@ class WavFileSource:
                     if self._closed:
                         return
 
+                    if started is None:
+                        started = clock.time()
                     yield AudioFrame(
                         pcm=pcm,
                         start_ms=self._samples_emitted * 1000 // self.sample_rate,
                         duration_ms=self.frame_ms,
                     )
                     self._samples_emitted += self._frame_samples
+                    played += self._frame_samples
 
-                    if interval:
-                        await asyncio.sleep(interval)
+                    if self.speed > 0:
+                        due = started + played / self.sample_rate / self.speed
+                        await asyncio.sleep(max(0.0, due - clock.time()))
                     else:
                         await asyncio.sleep(0)
 
