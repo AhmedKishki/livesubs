@@ -71,15 +71,15 @@ def role_from(value: str | None, session: Session) -> ClientRole:
     default language, so a misspelling can never widen what a device receives or put it
     in a language nobody chose.
 
-    The default viewer is what a plain QR scan gets: the mode's first target language.
-    Every other language needs its explicit role.
+    The legacy default role resolves the fallback now. The resulting concrete role
+    remains pinned even if the operator changes that fallback later.
     """
 
     if value == "admin":
         return ClientRole.admin()
 
     match = _LANGUAGE_ROLE.fullmatch(value or "")
-    if match is not None and match.group(1) in LANGUAGES:
+    if match is not None:
         language = match.group(1)
         if language not in session.targets:
             raise UnsupportedLanguage(language)
@@ -165,7 +165,8 @@ def build_router(settings: Settings) -> APIRouter:
         try:
             role = role_from(websocket.query_params.get("role"), session)
         except UnsupportedLanguage as unsupported:
-            name = LANGUAGES[unsupported.language].name
+            info = LANGUAGES.get(unsupported.language)
+            name = info.name if info is not None else unsupported.language
             await _refuse(
                 websocket,
                 WS_UNSUPPORTED_LANGUAGE,

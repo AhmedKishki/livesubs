@@ -38,17 +38,19 @@ class Session:
         name: str,
         publisher: SegmentPublisher,
         mode: Mode,
+        default_language: str = "en",
         on_failure: Callable[[], None] | None = None,
     ) -> None:
         self.id = id
         self.name = name
         self.mode = mode
-        #: The language the speaker uses.
-        self.source = mode.source
-        #: The target languages this session can actually produce, default first. The mode
-        #: says what is possible; the publisher says what it can do. A viewer that asks for
-        #: a language outside this list is refused at the socket rather than being allowed
-        #: to create demand for text that will never arrive.
+        #: Stable source capabilities, independent of recognition intent.
+        self.source = "en+de"
+        if default_language not in {"en", "de", "ar"}:
+            raise ValueError("default_language must be en, de or ar")
+        self.default_language = default_language
+        self.revision = 0
+        #: All three targets are required; fallback is not derived from their order.
         self.targets = _targets(mode, publisher)
         self.hub = Hub(self.targets)
         self.publisher = publisher
@@ -84,17 +86,54 @@ class Session:
                 "uptime_s": round(self.uptime_s, 1),
                 "recording": bool(getattr(self.publisher, "records_audio", False)),
                 "status": self.hub.current_status(),
+                **self.controls(),
             },
             "audience": self.hub.metrics.snapshot(self.hub),
             "pipeline": describe() if callable(describe) else None,
             "server": loop_monitor.snapshot() if loop_monitor is not None else process_stats(),
         }
 
-    @property
-    def default_language(self) -> str:
-        """What a plain QR scan reaches."""
+    def controls(self) -> dict[str, Any]:
+        describe = getattr(self.publisher, "speaker_snapshot", None)
+        recognition = (
+            describe() if callable(describe) else {
+                "requested": self.mode.source if self.mode.source in {"en", "de"} else "auto",
+                "active": None,
+                "state": "paused",
+                "revision": 0,
+                "error": None,
+            }
+        )
+        return {
+            "session_id": self.id,
+            "revision": self.revision,
+            "speaker": recognition["requested"],
+            "default_language": self.default_language,
+            "recognition": recognition,
+        }
 
-        return self.targets[0]
+    def update_settings(self, values: Any) -> dict[str, Any]:
+        """Validate the entire update before recording either choice, without yielding."""
+        allowed = {"speaker": {"auto", "en", "de"}, "default_language": {"en", "de", "ar"}}
+        if not isinstance(values, dict) or not values or values.keys() - allowed.keys():
+            raise ValueError("expected speaker and/or default_language")
+        if any(
+            not isinstance(value, str) or value not in allowed[key]
+            for key, value in values.items()
+        ):
+            raise ValueError("unsupported session setting")
+        current = self.controls()
+        changed = any(current[key] != value for key, value in values.items())
+        if "speaker" in values and values["speaker"] != current["speaker"]:
+            setter = getattr(self.publisher, "set_speaker", None)
+            if not callable(setter):
+                raise ValueError("publisher does not support speaker controls")
+            setter(values["speaker"])
+        if "default_language" in values:
+            self.default_language = values["default_language"]
+        if changed:
+            self.revision += 1
+        return self.controls()
 
     @property
     def running(self) -> bool:
@@ -166,21 +205,12 @@ class Session:
 
 
 def _targets(mode: Mode, publisher: SegmentPublisher) -> tuple[str, ...]:
-    """The mode's targets that the publisher can produce, in the mode's order.
+    """Reject an incapable publisher rather than silently narrowing the fixed offer."""
 
-    A publisher that does not say what it can produce is offered the mode's default
-    language only: the safe reading is that it can do one thing.
-    """
-
-    declared = getattr(publisher, "supported_languages", None)
-    if declared is None:
-        return (mode.default_target,)
-    offered = tuple(code for code in mode.targets if code in declared)
-    if not offered:
-        raise ValueError(
-            f"the publisher produces {', '.join(declared) or 'nothing'}, but a "
-            f"{mode.source!r} speaker is offered {', '.join(mode.targets)}"
-        )
+    declared = getattr(publisher, "supported_languages", None) or ()
+    offered = ("en", "de", "ar")
+    if not set(offered).issubset(declared):
+        raise ValueError("publisher must support all subtitle languages: en, de, ar")
     return offered
 
 

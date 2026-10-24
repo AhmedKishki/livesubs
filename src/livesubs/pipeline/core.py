@@ -16,14 +16,11 @@ language's worker, which handles one segment at a time. Capture never publishes,
 cannot invert and a ``final`` can never be followed by a ``draft``. Capture hands work over
 through a queue and returns immediately, so a slow provider applies backpressure to nothing.
 
-**3. Only translated text is ever published.** The obvious-looking shortcut of echoing the
-recogniser's partial into a subtitle so something appears sooner puts the speaker's language
-on a screen meant for another. The speaker's words ride in ``src``, which the hub strips for
-viewers. That has a latency consequence worth stating plainly: the screen shows nothing
-new until the first translated word of the next segment arrives, roughly one endpoint delay
-after the speaker pauses. A placeholder would be worse than briefly holding the previous
-line, and translating every partial would multiply the translation bill by about eight for
-no reading-time gain, because reading speed is the binding constraint anyway.
+**3. Output belongs to its target language.** A committed homogeneous source can supply a
+matching target's final transcription. Other targets and uncertain source text require MT.
+Both paths use the same ordered worker; publishing recognition partials directly would
+bypass ordering and put unclassified speech on a reader's screen. The hub strips ``src``
+from viewer messages independently of the chosen output path.
 
 **4. Trouble is made visible, not absorbed.** If a translator falls behind, the
 language's readers are told it is delayed, and past a limit the oldest queued segments are
@@ -38,21 +35,22 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from typing import Any
 
 from livesubs.asr.base import AsrProvider
 from livesubs.audio.base import AudioSource, Preparable, ReportsCapture
 from livesubs.audio.calibration import CalibrationNotice
 from livesubs.events import PipelineStatus, Stage
-from livesubs.hub import Hub
+from livesubs.hub import Hub, Presence
 from livesubs.ingest import FrameStats, Ingest
 from livesubs.mt.base import MtProvider
 from livesubs.pipeline.asr_session import AsrSession
 from livesubs.pipeline.health import Health
 from livesubs.pipeline.lifecycle import DemandChanged, Lifecycle
-from livesubs.pipeline.records import Committed, PipelineConfig
+from livesubs.pipeline.records import Committed, PipelineConfig, SourceSegment
 from livesubs.pipeline.stats import PipelineStats
-from livesubs.pipeline.targets import Item, TargetWorker, WorkerEnv
+from livesubs.pipeline.targets import TargetWorker, WorkerEnv
 from livesubs.segmenter import Decision, SegmentBuffer
 from livesubs.transcript import TranscriptAssembler
 
@@ -82,6 +80,8 @@ class LivePipeline:
         config: PipelineConfig | None = None,
         on_stats: Callable[[FrameStats], None] | None = None,
         on_segment: Callable[[Committed], None] | None = None,
+        on_source: Callable[[SourceSegment], None] | None = None,
+        speaker: str | None = None,
         require_audience: bool = False,
     ) -> None:
         """Wire a pipeline.
@@ -97,12 +97,24 @@ class LivePipeline:
 
         if not translators:
             raise ValueError("a pipeline needs a translator for at least one target language")
-        if source_language in translators:
-            raise ValueError(f"{source_language!r} is the speaker's language, not a target")
 
         self.source = source
         self.source_language = source_language
         self.config = config or PipelineConfig()
+        requested = self.config.asr.language if speaker is None else speaker
+        self._requested = "auto" if requested == "en+de" else requested
+        if self._requested not in {"auto", "en", "de"}:
+            raise ValueError("speaker must be auto, en or de")
+        self._recognition_revision = 0
+        self._active_speaker: str | None = None
+        self._stream_speaker: str | None = None
+        self._recognition_state = "paused"
+        self._recognition_error: str | None = None
+        self._detected: dict[str, Any] | None = None
+        self._handover = False
+        self._stream_epoch = 0
+        self._buffer: SegmentBuffer | None = None
+        self.on_source = on_source
         #: Called at most once per ``telemetry_interval_ms`` with the latest frame
         #: statistics. Deliberately a callback rather than a wire message: the operator
         #: console should not need the pipeline to change.
@@ -150,12 +162,49 @@ class LivePipeline:
 
         self._asr_life: Lifecycle | None = None
         self._worker_lives: dict[str, Lifecycle] = {}
+        self._recognition_audience: Presence | None = None
 
     @property
     def supported_languages(self) -> tuple[str, ...]:
         """The target languages this pipeline can produce, in the order they are offered."""
 
         return tuple(self._workers)
+
+    def set_speaker(self, value: str) -> bool:
+        if value not in {"auto", "en", "de"}:
+            raise ValueError("speaker must be auto, en or de")
+        if value == self._requested:
+            return False
+        self._requested = value
+        self._recognition_revision += 1
+        self._recognition_error = None
+        demanded = self._hub is not None and (not self._require_audience or self._hub.has_viewers)
+        self._recognition_state = "applying" if demanded else "paused"
+        if self._asr_life is not None:
+            if self._asr.is_open:
+                self._handover = True
+            self._asr_life.invalidate()
+        return True
+
+    def speaker_snapshot(self) -> dict[str, Any]:
+        state = self._recognition_state
+        if self._require_audience and self._hub and not self._hub.has_viewers:
+            state = "paused"
+        result = {
+            "requested": self._requested,
+            "active": self._active_speaker,
+            "state": state,
+            "revision": self._recognition_revision,
+            "error": self._recognition_error,
+        }
+        if self._detected is not None:
+            result["detected"] = dict(self._detected)
+        return result
+
+    def _stream_config(self):
+        return replace(self.config.asr, language=(
+            "en+de" if self._requested == "auto" else self._requested
+        ))
 
     @property
     def records_audio(self) -> bool:
@@ -186,6 +235,7 @@ class LivePipeline:
                 "capturing": bool(getattr(self.source, "alive", True)),
             },
             "recognition": {
+                **self.speaker_snapshot(),
                 "open": self._asr.is_open,
                 "healthy": self._asr.healthy if self._asr.is_open else None,
                 "streams_opened": self._asr.opens,
@@ -268,9 +318,11 @@ class LivePipeline:
                 raise
         else:
             hub.enable_audience_gating()
-            self._supervise(hub)
+        self._supervise(hub)
 
         buffer = SegmentBuffer(self.config.segmenter, started_ms=0, last_voice_ms=0)
+        self._buffer = buffer
+        epoch = self._stream_epoch
         self._seq = 0
         last_telemetry_ms = 0
         last_health_ms = 0
@@ -289,10 +341,14 @@ class LivePipeline:
                 self.stats.audio = stats
 
                 if self._recogniser_is_live():
+                    if epoch != self._stream_epoch:
+                        epoch = self._stream_epoch
+                        buffer.reset(frame.start_ms)
+                        awaiting_resume = True
                     # Push before deciding anything: the provider's own endpointing is
                     # worth more the sooner it sees the audio, and `push` is required
                     # not to block for longer than a frame.
-                    await self._asr.push(frame.pcm)
+                    await self._asr.push(frame.pcm, audio_ms=frame.start_ms)
 
                     # Hand the event loop one turn, so the collector can move whatever
                     # the provider just produced into the inbox. Without this the capture
@@ -337,19 +393,20 @@ class LivePipeline:
                         # What the recogniser has said that has not been sent yet. Taken from
                         # the assembler, not from the newest event: that event describes the
                         # recogniser's chunk, not this segment.
-                        text = self._assembler.commit()
-                        if text.strip():
+                        committed = self._assembler.commit_source(pin=self._pin())
+                        if committed.text.strip():
                             # The span is taken from the buffer rather than from the
                             # current frame: speech began at `started_ms` and stopped at
                             # `end_ms`, and the gap since then is the pause that closed the
                             # segment. A cue covering the pause too would sit on screen
                             # through the one moment a viewer looks up.
                             self._dispatch(
-                                (
+                                SourceSegment(
                                     self._seq,
-                                    text,
+                                    committed.text,
                                     buffer.started_ms,
                                     max(buffer.end_ms, buffer.started_ms),
+                                    committed.language,
                                 )
                             )
                             self._seq += 1
@@ -362,9 +419,10 @@ class LivePipeline:
                     # segmenter closed, so the next line begins with the speech that
                     # follows the audience's return rather than with stale audio.
                     awaiting_resume = True
-                    self._assembler.reset()
-                    self._speech_final = False
-                    self._asr.discard()
+                    if not self._handover:
+                        self._assembler.reset()
+                        self._speech_final = False
+                        self._asr.discard()
 
                 if stats.now_ms - last_health_ms >= self.config.health_check_ms:
                     last_health_ms = stats.now_ms
@@ -417,10 +475,11 @@ class LivePipeline:
 
         if not self._asr.is_open:
             return False
-        if not self._require_audience:
-            return True
         life = self._asr_life
-        return life is not None and life.current
+        return life.current if life is not None else not self._require_audience
+
+    def _pin(self) -> str | None:
+        return self._stream_speaker if self._stream_speaker in {"en", "de"} else None
 
     def _ingest_events(self) -> bool:
         """Fold the recogniser's new events into the unsent text, without awaiting.
@@ -445,6 +504,8 @@ class LivePipeline:
     def _recogniser_ended(self, failed: bool) -> None:
         """The stream ended and nobody closed it: the recogniser is gone."""
 
+        if self._asr_life is not None and not self._asr_life.current:
+            return
         hub = self._hub
         if hub is not None and failed:
             hub.publish_error("recognition stream failed", Stage.ASR)
@@ -453,7 +514,7 @@ class LivePipeline:
     def _check_recogniser(self) -> None:
         """A second line of defence: a stream that goes quiet without ending."""
 
-        if self._asr.is_open and not self._asr.healthy:
+        if self._recogniser_is_live() and not self._asr.healthy:
             self._recogniser_lost("the recogniser reports itself unhealthy")
 
     def _recogniser_lost(self, reason: str) -> None:
@@ -468,30 +529,66 @@ class LivePipeline:
             self._asr_life.fail()
 
     async def _start_recogniser(self, generation: int) -> None:
-        audience = self._require_hub().audience()
+        audience = self._recognition_audience
+        assert audience is not None
+        revision = self._recognition_revision
+        requested = self._requested
+        config = self._stream_config()
+        self._recognition_state = "applying"
 
         def current() -> bool:
-            return audience.present and audience.generation == generation
+            return (
+                audience.present and audience.generation == generation
+                and revision == self._recognition_revision
+                and self._stop is not None and not self._stop.is_set()
+            )
 
         if not current():
             raise DemandChanged
-        try:
-            await self._asr.open(self._audio_ms)
-            if not current():
-                raise DemandChanged
-        except BaseException:
+        await self._asr.open(self._audio_ms, config=config, defer_origin=True)
+        if not current():
             await self._asr.close()
-            raise
+            raise DemandChanged
         self._assembler.reset()
         self._speech_final = False
         self._asr_lost = False
+        self._stream_speaker = requested
+        self._active_speaker = requested
+        self._recognition_state = "active"
+        self._recognition_error = None
+        self._stream_epoch += 1
+        logger.info("recognition stream open")
         logger.info("recogniser opened for a viewer on session %s", self._session_id)
 
     async def _stop_recogniser(self) -> None:
-        await self._asr.close()
-        # A new stream restarts its clock at zero, so what was sent is forgotten with it.
-        self._assembler.reset()
-        self._speech_final = False
+        self._handover = True
+        self._active_speaker = None
+        try:
+            await self._asr.finish()
+            self._ingest_events()
+            self._commit_pending()
+        finally:
+            self._asr.discard()
+            self._assembler.reset()
+            self._speech_final = False
+            self._handover = False
+            self._recognition_state = "applying" if self._require_hub().has_viewers else "paused"
+
+    def _commit_pending(self) -> None:
+        committed = self._assembler.commit_source(pin=self._pin())
+        if committed.text.strip():
+            buffer = self._buffer
+            start = buffer.started_ms if buffer is not None else self._audio_ms
+            end = max(start, buffer.end_ms) if buffer is not None else self._audio_ms
+            self._dispatch(SourceSegment(self._seq, committed.text, start, end, committed.language))
+            self._seq += 1
+
+    def _recognition_trouble(self, detail: str) -> None:
+        life = self._asr_life
+        exhausted = life is not None and life.exhausted
+        self._recognition_state = "failed" if exhausted else "retrying"
+        self._recognition_error = "recognition could not be started"
+        self._require_health().problem("asr", "recognition is reconnecting")
 
     # --- supervision ----------------------------------------------------------------
 
@@ -504,16 +601,24 @@ class LivePipeline:
         """
 
         health = self._require_health()
+        audience = hub.audience() if self._require_audience else Presence()
+        if not self._require_audience:
+            audience.update(1)
+        self._recognition_audience = audience
         self._asr_life = Lifecycle(
             name="recogniser",
-            audience=hub.audience(),
+            audience=audience,
             start=self._start_recogniser,
             stop=self._stop_recogniser,
-            on_trouble=lambda detail: health.problem("asr", "recognition is reconnecting"),
+            on_trouble=self._recognition_trouble,
             on_ok=lambda: health.clear("asr"),
         )
+        if not self._require_audience:
+            self._asr_life.adopt()
         self._asr_life.spawn()
 
+        if not self._require_audience:
+            return
         for language, worker in self._workers.items():
             life = Lifecycle(
                 name=f"translator:{language}",
@@ -534,7 +639,11 @@ class LivePipeline:
         The simulation and direct pipeline tests have no viewers and must simply run.
         """
 
-        await self._asr.open(self._audio_ms)
+        await self._asr.open(self._audio_ms, config=self._stream_config(), defer_origin=True)
+        self._stream_speaker = self._requested
+        self._active_speaker = self._requested
+        self._recognition_state = "active"
+        logger.info("recognition stream open")
         for worker in self._workers.values():
             await worker.start(None)
 
@@ -545,7 +654,7 @@ class LivePipeline:
 
     # --- handing segments to the languages -----------------------------------------
 
-    def _dispatch(self, committed: Item) -> None:
+    def _dispatch(self, committed: SourceSegment) -> None:
         """Hand one committed source segment to every language that has a viewer.
 
         Every language gets the same source text and the same ``seq``; each keeps its own
@@ -553,6 +662,12 @@ class LivePipeline:
         """
 
         self.stats.committed += 1
+        self._detected = {"seq": committed.seq, "language": committed.language}
+        if self.on_source is not None:
+            try:
+                self.on_source(committed)
+            except Exception:
+                logger.exception("on_source callback failed")
         for worker in self._workers.values():
             worker.offer(committed)
 
@@ -594,11 +709,7 @@ class LivePipeline:
             # 2. Commit the utterance that was still open, so nothing is left as a draft
             #    forever. Text the assembler still holds was never sent, so this cannot
             #    duplicate a final. Every active language gets it.
-            text = self._assembler.commit()
-            if text.strip():
-                self._dispatch(
-                    (self._seq, text, buffer.started_ms, max(buffer.end_ms, buffer.started_ms))
-                )
+            self._commit_pending()
 
             # 3. Now let the workers drain everything, that last segment included. All at
             #    once: the budget is for shutdown, not per language.
@@ -682,4 +793,3 @@ class LivePipeline:
         if self._health is None:
             raise RuntimeError("the pipeline is not running")
         return self._health
-

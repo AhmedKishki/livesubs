@@ -11,22 +11,21 @@ def test_an_english_speaker_reaches_german_by_default_and_arabic_on_request() ->
     mode = mode_for("en")
 
     assert mode.source == "en"
-    assert mode.targets == ("de", "ar")
-    assert mode.default_target == "de"
+    assert mode.targets == ("en", "de", "ar")
+    assert mode.default_target == "en"
 
 
 def test_a_german_speaker_reaches_english_by_default_and_arabic_on_request() -> None:
     mode = mode_for("de")
 
     assert mode.source == "de"
-    assert mode.targets == ("en", "ar")
+    assert mode.targets == ("en", "de", "ar")
     assert mode.default_target == "en"
 
 
-def test_a_single_speaker_is_never_offered_their_own_language() -> None:
+def test_every_mode_offers_all_targets() -> None:
     for mode in MODES.values():
-        if not mode.is_conversation:
-            assert mode.source not in mode.targets
+        assert mode.targets == ("en", "de", "ar")
 
 
 def test_every_language_a_mode_mentions_is_registered() -> None:
@@ -50,16 +49,13 @@ def test_a_single_speaker_speaks_one_language() -> None:
 
 
 def test_a_conversation_can_be_narrowed_but_not_widened() -> None:
-    assert mode_for("en+de", ["de", "en"]).targets == ("de", "en")
-    assert mode_for("en+de", ["de", "en"]).spoken == ("en", "de")
-    with pytest.raises(ValueError, match="cannot be a target"):
-        mode_for("en+de", ["fr"])
+    with pytest.raises(ValueError, match="remove session.targets"):
+        mode_for("auto", ["de", "en"])
 
 
 def test_a_mode_can_be_narrowed_to_some_of_its_targets() -> None:
-    assert mode_for("en", ["de"]).targets == ("de",)
-    assert mode_for("en", ["ar", "de"]).targets == ("ar", "de")
-    assert mode_for("en", ["ar", "de"]).default_target == "ar"
+    with pytest.raises(ValueError, match="remove session.targets"):
+        mode_for("en", ["de"])
 
 
 def test_narrowing_to_nothing_leaves_the_mode_alone() -> None:
@@ -67,15 +63,16 @@ def test_narrowing_to_nothing_leaves_the_mode_alone() -> None:
 
 
 def test_narrowing_ignores_a_repeated_target() -> None:
-    assert mode_for("en", ["de", "de"]).targets == ("de",)
+    with pytest.raises(ValueError, match="remove session.targets"):
+        mode_for("en", ["de", "de"])
 
 
 def test_a_mode_cannot_be_widened() -> None:
     """No pairing is supported that the mode does not list."""
 
-    with pytest.raises(ValueError, match="cannot be a target"):
+    with pytest.raises(ValueError, match="remove session.targets"):
         mode_for("en", ["de", "en"])
-    with pytest.raises(ValueError, match="cannot be a target"):
+    with pytest.raises(ValueError, match="remove session.targets"):
         mode_for("de", ["de"])
 
 
@@ -96,8 +93,8 @@ def test_arabic_is_right_to_left_and_the_others_are_not() -> None:
 
 
 def test_a_label_names_both_sides() -> None:
-    assert mode_for("en").label == "English speaker, German or Arabic subtitles"
-    assert mode_for("de").label == "German speaker, English or Arabic subtitles"
+    assert mode_for("en").label == "English speaker, English, German or Arabic subtitles"
+    assert mode_for("de").label == "German speaker, English, German or Arabic subtitles"
     assert mode_for("en+de").label == (
         "English and German conversation, English, German or Arabic subtitles"
     )

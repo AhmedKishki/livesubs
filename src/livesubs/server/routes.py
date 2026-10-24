@@ -24,6 +24,26 @@ from livesubs.preflight import lan_ip
 __all__ = ["build_router", "viewer_url", "web_dir"]
 
 
+def _origin(value: str) -> tuple[str, str, int] | None:
+    try:
+        parsed = urlparse(value)
+        if (
+            parsed.scheme.lower() not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            return None
+        scheme = parsed.scheme.lower()
+        port = parsed.port if parsed.port is not None else (443 if scheme == "https" else 80)
+        return scheme, parsed.hostname.lower(), port
+    except ValueError:
+        return None
+
+
 def web_dir(settings: Settings) -> Path:
     """Where the no-build frontend lives."""
 
@@ -139,6 +159,7 @@ def build_router(settings: Settings) -> APIRouter:
         return JSONResponse(
             {
                 "id": session.id,
+                **session.controls(),
                 "name": session.name,
                 #: Who is speaking, and what listeners can choose. The viewer page builds
                 #: its language picker from this, so it offers only what can be produced.
@@ -195,6 +216,26 @@ def build_router(settings: Settings) -> APIRouter:
     async def current_session(request: Request) -> JSONResponse:
         """For the landing page, which does not know the session id up front."""
         return session_json(request, settings.session_id)
+
+    @router.post("/api/session/{session_id}/settings")
+    async def update_settings(session_id: str, request: Request) -> JSONResponse:
+        session = request.app.state.sessions.get(session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="unknown session")
+        origin = request.headers.get("origin")
+        if origin is not None and (
+            _origin(origin) is None or _origin(origin) != _origin(str(request.base_url))
+        ):
+            raise HTTPException(status_code=403, detail="foreign origin")
+        content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json":
+            raise HTTPException(status_code=415, detail="application/json required")
+        try:
+            values = await request.json()
+            result = session.update_settings(values)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="invalid session settings") from None
+        return JSONResponse(result)
 
     @router.get("/api/stats")
     async def stats(request: Request) -> JSONResponse:

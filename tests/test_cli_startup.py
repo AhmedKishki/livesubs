@@ -48,7 +48,9 @@ def startup(monkeypatch, tmp_path):
 @pytest.mark.parametrize("arguments", [[], ["--start"]])
 def test_default_and_explicit_start_choose_before_preflight_and_serve(startup, arguments):
     assert cli.main(arguments) == 0
-    assert startup["prepare"] == [{"preferred_target": None, "config_path": None}]
+    assert startup["prepare"] == [
+        {"preferred_target": None, "config_path": None, "explicit_speaker": False}
+    ]
     assert startup["preflight"][0][1] == "live"
     args, settings = startup["serve"][0]
     assert args.audio == "pw:chosen-mic"

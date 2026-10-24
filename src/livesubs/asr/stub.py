@@ -58,8 +58,12 @@ class StubAsr:
         partial_interval_ms: int = 300,
         #: Duration at which a partial has grown to the full phrase.
         partial_target_ms: int = 2000,
+        source_language: str | None = None,
     ) -> None:
         self.phrases = tuple(phrases) or DEFAULT_PHRASES
+        self.source_language = (
+            "en" if self.phrases == DEFAULT_PHRASES else source_language
+        )
         self.sample_rate = sample_rate
         self.endpoint_silence_ms = endpoint_silence_ms
         self.partial_interval_ms = partial_interval_ms
@@ -135,6 +139,7 @@ class StubAsr:
             confidence=1.0,
             words=None,
             speech_final=speech_final,
+            language=self.source_language,
         )
 
     def _text_for(self, *, now_ms: int, final: bool) -> str:

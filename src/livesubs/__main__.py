@@ -84,10 +84,9 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=sorted(MODES),
         default=None,
         help=(
-            "the language the presenter speaks: en (listeners read German or Arabic), "
-            "de (listeners read English or Arabic), or en+de for a conversation that switches "
-            "between them (listeners read English, German or Arabic); default: "
-            "session.speaker, then en"
+            "recognition setting: auto, en or de; en+de is a deprecated alias for auto. "
+            "All settings offer English, German and Arabic subtitles; default: "
+            "session.speaker, then auto"
         ),
     )
     parser.add_argument(
@@ -536,6 +535,7 @@ def _cmd_start(args: argparse.Namespace, settings: Settings) -> int:
         settings,
         preferred_target=args.audio[3:].strip() if args.audio else None,
         config_path=_config_path(args),
+        explicit_speaker=args.speaker is not None,
     )
     server_updates = {}
     if args.host is not None:

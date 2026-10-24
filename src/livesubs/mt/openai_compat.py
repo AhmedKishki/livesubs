@@ -107,7 +107,7 @@ def build_system_prompt(
 
     speaks, listens = _pair(source, target)
     lines = "\n".join(f"- {entry}" for entry in glossary)
-    template = CONVERSATION_TEMPLATE if len(speaks) > 1 else SYSTEM_TEMPLATE
+    template = CONVERSATION_TEMPLATE if len(speaks) > 1 or source == target else SYSTEM_TEMPLATE
     return template.format(
         source=speaks[0].name,
         sources=names(spoken(source)),
@@ -121,8 +121,6 @@ def build_system_prompt(
 def _pair(source: str, target: str) -> tuple[tuple[Language, ...], Language]:
     """The spoken languages and the target. A conversation may be read in one it speaks."""
 
-    if source == target:
-        raise ValueError(f"cannot translate {source!r} into itself")
     return tuple(language(code) for code in spoken(source)), language(target)
 
 
@@ -153,7 +151,7 @@ class OpenAiCompatMt:
                 "reasoning adds seconds per segment (see docs/05-providers.md)"
             )
 
-        # Refused here, before any request, if either language is unknown or they match.
+        # Refuse unknown languages before any request; same-target rendering is valid.
         speaks, listens = _pair(source_language, target_language)
 
         self.model = model
@@ -170,7 +168,11 @@ class OpenAiCompatMt:
         self._greeting = speaks[0].greeting
         #: What each request asks for. A conversation's reader gets the speakers' own words
         #: whenever they spoke the reader's language, so its request is not a translation.
-        verb = "Subtitle this in" if len(speaks) > 1 else "Translate this into"
+        verb = (
+            "Subtitle this in"
+            if len(speaks) > 1 or source_language == target_language
+            else "Translate this into"
+        )
         self._request = f"{verb} {listens.name}"
 
         self.system_prompt = build_system_prompt(
@@ -250,7 +252,7 @@ class OpenAiCompatMt:
         if ctx.target_context:
             previous = "\n".join(f"- {line}" for line in ctx.target_context)
             blocks.append(
-                f"Your own previous {self.target_name} output, for terminology "
+                f"Previous {self.target_name} subtitles/output, for terminology "
                 f"consistency only:\n{previous}"
             )
 

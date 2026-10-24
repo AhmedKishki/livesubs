@@ -24,6 +24,24 @@
 
     <section id="alerts" class="admin-alerts" aria-live="polite"></section>
 
+    <section class="session-controls" aria-label="Live session settings">
+      <label for="speaker-language">Speaker language</label>
+      <select id="speaker-language">
+        <option value="auto">Auto</option>
+        <option value="en">English</option>
+        <option value="de">German</option>
+      </select>
+      <label for="default-language">Fallback subtitle language</label>
+      <select id="default-language">
+        <option value="en">English</option>
+        <option value="de">Deutsch</option>
+        <option value="ar">العربية</option>
+      </select>
+      <p id="recognition-state" role="status" aria-live="polite">Loading recognition state…</p>
+      <p id="settings-error" role="alert"></p>
+      <p>Changes apply to this run only. Change speaker language during a pause; recognition may be interrupted.</p>
+    </section>
+
     <section class="cards">
       <article class="card">
         <h2>Audience</h2>

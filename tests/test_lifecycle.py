@@ -75,6 +75,51 @@ def test_the_back_off_doubles_and_is_capped() -> None:
     assert backoff_seconds(10) == 5.0
 
 
+async def test_configuration_invalidation_replaces_without_reporting_failure() -> None:
+    resource = Resource()
+    life, audience, trouble, _ = make(resource)
+    audience.update(1)
+    await wait_until(lambda: life.current)
+    life.invalidate()
+    assert not life.current
+    await wait_until(lambda: len(resource.starts) == 2 and life.current)
+    assert resource.stops == 1
+    assert trouble == []
+    await life.close()
+
+
+async def test_invalidation_cancels_open_and_latest_revision_wins() -> None:
+    resource = Resource()
+    resource.gate = asyncio.Event()
+    life, audience, trouble, _ = make(resource)
+    audience.update(1)
+    await resource.entered.wait()
+    life.invalidate()
+    life.invalidate()
+    await wait_until(lambda: resource.cancelled)
+    resource.gate.set()
+    await wait_until(lambda: life.current)
+    assert life.revision == 2
+    assert trouble == []
+    await life.close()
+
+
+@pytest.mark.usefixtures("quick_backoff")
+async def test_invalidation_wakes_exhausted_configuration_without_audience_change() -> None:
+    resource = Resource()
+    resource.fail_next = 100
+    life, audience, _, _ = make(resource, retry_limit=0)
+    audience.update(1)
+    await wait_until(lambda: life.exhausted)
+    resource.fail_next = 0
+    generation = audience.generation
+    life.invalidate()
+    await wait_until(lambda: life.current)
+    assert audience.generation == generation
+    assert len(resource.starts) == 2
+    await life.close()
+
+
 async def test_nothing_starts_without_an_audience() -> None:
     resource = Resource()
     life, _, _, _ = make(resource)

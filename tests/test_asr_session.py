@@ -77,6 +77,144 @@ def test_a_session_needs_a_provider_or_a_factory() -> None:
         session()
 
 
+async def test_replacement_origin_is_first_fed_frame() -> None:
+    provider = Recogniser(seekable=True)
+    asr = session(provider)
+    await asr.open(100, config=AsrConfig(language="de"), defer_origin=True)
+    assert provider.sought == []
+    await asr.push(b"audio", audio_ms=700)
+    assert provider.sought == [700]
+    assert asr.origin_ms == 700
+    await asr.close()
+
+
+async def test_open_timeout_closes_half_open_provider(monkeypatch):
+    from livesubs.pipeline import asr_session
+
+    monkeypatch.setattr(asr_session, "OPEN_GRACE_S", 0.01)
+
+    class Slow(Recogniser):
+        async def open(self, cfg):
+            await asyncio.Event().wait()
+
+    provider = Slow()
+    asr = session(provider)
+    with pytest.raises(TimeoutError):
+        await asr.open(0)
+    assert provider.closes == 1
+    assert not asr.is_open
+
+
+async def test_uncooperative_close_does_not_hold_the_owner(monkeypatch):
+    from livesubs.pipeline import asr_session
+
+    release = asyncio.Event()
+    finished = asyncio.Event()
+    original_cancel = asr_session.cancel_bounded
+
+    async def quick_cancel(task):
+        await original_cancel(task, timeout=0.01)
+
+    monkeypatch.setattr(asr_session, "cancel_bounded", quick_cancel)
+
+    class Stuck(Recogniser):
+        async def close(self):
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                await release.wait()
+            finally:
+                finished.set()
+
+    try:
+        await asyncio.wait_for(close_bounded(Stuck(), timeout=0.01), timeout=0.2)
+        assert not finished.is_set()
+    finally:
+        release.set()
+        await asyncio.wait_for(finished.wait(), timeout=0.2)
+
+
+@pytest.mark.parametrize("abandon", ["timeout", "cancel"])
+async def test_abandoned_open_is_closed_again_after_late_completion(monkeypatch, abandon):
+    from livesubs.pipeline import asr_session
+
+    monkeypatch.setattr(asr_session, "OPEN_GRACE_S", 0.001 if abandon == "timeout" else 10)
+    original_cancel = asr_session.cancel_bounded
+
+    async def quick_cancel(task):
+        await original_cancel(task, timeout=0.001)
+
+    monkeypatch.setattr(asr_session, "cancel_bounded", quick_cancel)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class Resistant(Recogniser):
+        live = False
+
+        async def open(self, cfg):
+            entered.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                await release.wait()
+            self.live = True
+
+        async def close(self):
+            self.live = False
+            await super().close()
+
+    old = Resistant()
+    fresh = Recogniser()
+    asr = session(old, factory=lambda: fresh)
+    opening = asyncio.create_task(asr.open(0))
+    await entered.wait()
+    if abandon == "cancel":
+        opening.cancel()
+    with pytest.raises(TimeoutError if abandon == "timeout" else asyncio.CancelledError):
+        await asyncio.wait_for(opening, timeout=0.2)
+    assert old.closes == 1 and not old.live and not asr.is_open
+    await asr.open(100)
+    assert asr.provider is fresh and asr.is_open
+    release.set()
+    await wait_until(lambda: old.closes == 2, timeout=0.2)
+    assert not old.live
+    assert fresh.closes == 0 and asr.provider is fresh and asr.is_open
+    await asr.close()
+
+
+@pytest.mark.parametrize("reuse", ["seed", "factory"])
+async def test_pending_abandoned_provider_cannot_be_reentered(monkeypatch, reuse):
+    from livesubs.pipeline import asr_session
+
+    monkeypatch.setattr(asr_session, "OPEN_GRACE_S", 0.001)
+    original_cancel = asr_session.cancel_bounded
+
+    async def quick_cancel(task):
+        await original_cancel(task, timeout=0.001)
+
+    monkeypatch.setattr(asr_session, "cancel_bounded", quick_cancel)
+    release = asyncio.Event()
+
+    class Resistant(Recogniser):
+        async def open(self, cfg):
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                await release.wait()
+
+    old = Resistant()
+    asr = session(old, factory=(lambda: old) if reuse == "factory" else None)
+    try:
+        with pytest.raises(TimeoutError):
+            await asr.open(0)
+        with pytest.raises(RuntimeError, match="abandoned"):
+            await asr.open(100)
+    finally:
+        release.set()
+        await wait_until(lambda: old.closes == 2, timeout=0.2)
+        await asr.close()
+
+
 async def test_the_first_open_uses_the_provider_built_at_startup() -> None:
     first = Recogniser()
     built: list[Recogniser] = []

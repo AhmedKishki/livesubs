@@ -86,7 +86,7 @@ def test_the_checker_holds_targets_to_their_language_and_the_transcript_to_the_t
         )
     )
     stem = tmp_path / "demo-1"
-    (tmp_path / "demo-1.en+de.srt").write_text(
+    (tmp_path / "demo-1.source.srt").write_text(
         "1\n00:00:01,000 --> 00:00:03,000\nHe woke up and he was not a man.\n\n"
         "2\n00:00:05,000 --> 00:00:07,000\nEr wachte auf und er war nicht mehr ein Mensch.\n"
     )
@@ -98,9 +98,17 @@ def test_the_checker_holds_targets_to_their_language_and_the_transcript_to_the_t
     assert check_conversation.main(["--turns", str(turns), str(stem)]) == 0
 
     report = capsys.readouterr().out
-    assert "en+de: 2 lines, 0 in the wrong language" in report
+    assert "source: 2 lines, 0 in the wrong language" in report
     assert "en: 2 lines, 1 in the wrong language" in report
     assert "expected en, read de" in report
+
+    (tmp_path / "demo-1.source.srt").rename(tmp_path / "demo-1.en+de.srt")
+    check_conversation.main(["--turns", str(turns), str(stem)])
+    report = capsys.readouterr().out
+    assert "en+de:" not in report
+    assert "en: 2 lines, 1 in the wrong language" in report
+    check_conversation.main(["--turns", str(turns), "--source-code", "en+de", str(stem)])
+    assert "en+de: 2 lines, 0 in the wrong language" in capsys.readouterr().out
 
 
 def test_the_checker_refuses_a_stem_with_no_subtitle_files(tmp_path: Path) -> None:

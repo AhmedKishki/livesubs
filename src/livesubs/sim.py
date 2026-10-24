@@ -17,7 +17,7 @@ No I/O, no network, no credentials.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 
 from livesubs.events import (
@@ -49,18 +49,22 @@ class SimSegment:
 
     final: dict[str, str]
     draft: dict[str, str] = field(default_factory=dict)
+    source_language: str = "en"
+    source_text: str | None = None
 
     def draft_for(self, language: str) -> str:
         return self.draft.get(language, self.final[language])
 
 
 def _line(
-    en: str, de: str, ar: str, *, en_draft: str = "", de_draft: str = "", ar_draft: str = ""
+    en: str, de: str, ar: str, *, en_draft: str = "", de_draft: str = "", ar_draft: str = "",
+    source_language: str = "en", source_text: str | None = None,
 ) -> SimSegment:
     drafts = {"en": en_draft, "de": de_draft, "ar": ar_draft}
     return SimSegment(
         final={"en": en, "de": de, "ar": ar},
         draft={code: text for code, text in drafts.items() if text},
+        source_language=source_language, source_text=source_text,
     )
 
 
@@ -88,6 +92,7 @@ _DEFAULT_SEGMENTS: list[SimSegment] = [
     ),
     _line(
         en="The amplitude decreases exponentially over time.",
+        source_language="de",
         de="Die Amplitude nimmt mit der Zeit exponentiell ab.",
         ar="تتناقص السعة أسّياً مع مرور الوقت.",
         en_draft="The amplitude falls off exponential with the time.",
@@ -96,6 +101,8 @@ _DEFAULT_SEGMENTS: list[SimSegment] = [
     ),
     _line(
         en="The damping constant determines how quickly energy is lost.",
+        source_language="mixed",
+        source_text="The damping constant bestimmt, wie schnell Energie verloren geht.",
         de="Die Dämpfungskonstante bestimmt, wie schnell Energie verloren geht.",
         ar="يحدد ثابت التخميد مدى سرعة فقدان الطاقة.",
         en_draft="The damping constant determines, how energy quickly lost goes.",
@@ -104,6 +111,7 @@ _DEFAULT_SEGMENTS: list[SimSegment] = [
     ),
     _line(
         en="Write this down, because it will appear on the exam.",
+        source_language="unknown",
         de="Notieren Sie das, denn es wird in der Prüfung vorkommen.",
         ar="دوّنوا هذا، لأنه سيأتي في الامتحان.",
         en_draft="Write that on, because it in the exam appear will.",
@@ -155,6 +163,8 @@ SCRIPTS: dict[str, SimScript] = {
                     for code, text in segment.final.items()
                 },
                 draft=dict(segment.draft),
+                source_language=segment.source_language,
+                source_text=segment.source_text,
             )
             for cycle in range(1, 4)
             for segment in _DEFAULT_SEGMENTS
@@ -172,6 +182,9 @@ async def replay(
     speed: float = 1.0,
     stop: asyncio.Event | None = None,
     loop: bool = False,
+    speaker: str = "auto",
+    speaker_getter: Callable[[], str] | None = None,
+    on_source: Callable[[int, str], None] | None = None,
 ) -> AsyncIterator[HelloMessage | SegmentMessage | StatusMessage]:
     """Emit a scripted lecture as if it were live.
 
@@ -197,7 +210,8 @@ async def replay(
     A conversation takes its spoken languages in turn, one line each.
     """
 
-    mode = mode or MODES["en"]
+    speaker = _speaker(speaker)
+    targets = ("en", "de", "ar")
     if script not in SCRIPTS:
         raise KeyError(f"unknown script {script!r}; available: {sorted(SCRIPTS)}")
 
@@ -210,8 +224,8 @@ async def replay(
         data=HelloPayload(
             session_id=session_id,
             session_name=f"sim:{script}",
-            source=mode.source,
-            targets=list(mode.targets),
+            source="en+de",
+            targets=list(targets),
         )
     )
     yield StatusMessage(data=StatusPayload(status="live"))
@@ -224,23 +238,34 @@ async def replay(
     while True:
         for offset, seg in enumerate(segments):
             seq = completed + offset
-            src = seg.final[mode.spoken[seq % len(mode.spoken)]]
+            requested = speaker_getter() if speaker_getter else speaker
+            language = requested if requested != "auto" else seg.source_language
+            src = (seg.final[language] if language in {"en", "de"}
+                   else seg.source_text or seg.final["en"])
+            if on_source:
+                on_source(seq, language)
 
             # Draft first: this is the state the attendee sees while MT is still
             # streaming, and the state the overlay must make look provisional.
-            for target in mode.targets:
+            for target in targets:
+                if target == language:
+                    yield _segment(seq, 0, SegmentState.FINAL, target, src, src,
+                                   audio_ms=seq * cadence, emit_ms=seq * cadence + 400)
+                    continue
                 yield _segment(seq, 0, SegmentState.DRAFT, target, seg.draft_for(target), src,
                                audio_ms=seq * cadence, emit_ms=seq * cadence + 400)
 
             # A revision that rewrites the clause, then commits. The pause before it
             # is scaled to a plausible MT latency so the pacing behaves realistically.
             await _sleep(600, speed, stop)
-            for target in mode.targets:
+            for target in targets:
+                if target == language:
+                    continue
                 yield _segment(seq, 1, SegmentState.FINAL, target, seg.final[target], src,
                                audio_ms=seq * cadence, emit_ms=seq * cadence + 900)
 
             # Pace the next segment against the longest line's reading-time hold.
-            longest = max(len(seg.final[target]) for target in mode.targets)
+            longest = max(len(seg.final[target]) for target in targets)
             await _sleep(max(cadence, hold_ms(longest)), speed, stop)
 
         completed += len(segments)
@@ -316,10 +341,39 @@ class SimPublisher:
     loop: bool = False
     #: Who is speaking and which languages listeners read.
     mode: Mode = MODES["en"]
+    speaker: str = "auto"
+    _revision: int = field(default=0, init=False)
+    _running: bool = field(default=False, init=False)
+    _detected: dict[str, object] | None = field(default=None, init=False)
+
+    def __post_init__(self) -> None:
+        self.speaker = _speaker(self.speaker)
+
+    def set_speaker(self, value: str) -> bool:
+        value = _speaker(value)
+        if value == self.speaker:
+            return False
+        self.speaker = value
+        self._revision += 1
+        return True
+
+    def speaker_snapshot(self) -> dict[str, object]:
+        result: dict[str, object] = {
+            "requested": self.speaker,
+            "active": self.speaker if self._running else None,
+            "state": "active" if self._running else "paused",
+            "revision": self._revision, "error": None,
+        }
+        if self._detected is not None:
+            result["detected"] = dict(self._detected)
+        return result
+
+    def _source(self, seq: int, language: str) -> None:
+        self._detected = {"seq": seq, "language": language}
 
     @property
     def supported_languages(self) -> tuple[str, ...]:
-        return self.mode.targets
+        return ("en", "de", "ar")
 
     def snapshot(self) -> dict[str, object]:
         """What the operator console can say about a replay: that it is one."""
@@ -327,6 +381,7 @@ class SimPublisher:
         return {"kind": "simulation", "script": self.script}
 
     async def run(self, hub: Hub, *, session_id: str, stop: asyncio.Event) -> None:
+        self._running = True
         try:
             async for message in replay(
                 self.script,
@@ -335,6 +390,8 @@ class SimPublisher:
                 speed=self.speed,
                 stop=stop,
                 loop=self.loop,
+                speaker_getter=lambda: self.speaker,
+                on_source=self._source,
             ):
                 # A session announces itself before it starts, under the name it was
                 # configured with. The replay's own hello would replace that with the
@@ -344,3 +401,13 @@ class SimPublisher:
                 hub.publish(message)
         except _Stopped:
             return
+        finally:
+            self._running = False
+
+
+def _speaker(value: str) -> str:
+    if value == "en+de":
+        return "auto"
+    if value not in {"auto", "en", "de"}:
+        raise ValueError("speaker must be auto, en or de")
+    return value

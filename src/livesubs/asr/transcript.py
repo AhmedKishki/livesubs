@@ -30,8 +30,12 @@ __all__ = ["TranscriptAsr"]
 class TranscriptAsr:
     """Emits each cue's text when the audio clock reaches the cue."""
 
-    def __init__(self, cues: Sequence[Cue], *, sample_rate: int = 16_000) -> None:
+    def __init__(
+        self, cues: Sequence[Cue], *, sample_rate: int = 16_000,
+        source_language: str | None = None,
+    ) -> None:
         self.cues = sorted(cues, key=lambda cue: cue.start_ms)
+        self.source_language = source_language
         self.sample_rate = sample_rate
 
         self._open = False
@@ -107,6 +111,7 @@ class TranscriptAsr:
                     # The transcript is a finished transcript, so every cue is an end of
                     # utterance by construction.
                     speech_final=True,
+                    language=self.source_language,
                 )
             )
 

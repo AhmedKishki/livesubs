@@ -25,6 +25,7 @@ def prepare_live_start(
     preferred_target: str | None = None,
     config_path: Path | None = None,
     interactive: bool | None = None,
+    explicit_speaker: bool = False,
 ) -> Settings:
     """Choose a microphone and ensure the live providers are usable.
 
@@ -37,6 +38,19 @@ def prepare_live_start(
 
     if interactive is None:
         interactive = sys.stdin.isatty() and sys.stderr.isatty()
+
+    speaker = settings.session.speaker
+    fallback = settings.default_language
+    if interactive:
+        if not explicit_speaker:
+            speaker = _select_setting(
+                "Speaker language", [("auto", "Automatic"), ("en", "English"), ("de", "German")],
+                speaker,
+            )
+        fallback = _select_setting(
+            "Fallback subtitle language", [("en", "English"), ("de", "Deutsch"), ("ar", "العربية")],
+            fallback,
+        )
 
     target = _choose_target(
         settings, preferred_target, interactive=interactive, output_stream=sys.stderr
@@ -59,7 +73,15 @@ def prepare_live_start(
         current = _reload_settings(config_path)
         _confirm_providers_unchanged(current, ensured)
 
-    return _with_target(current, target)
+    return _with_target(current, target).for_session(speaker=speaker, default_language=fallback)
+
+
+def _select_setting(title: str, entries: list[tuple[str, str]], preferred: str) -> str:
+    """Reuse the terminal picker and its unconditional terminal restoration."""
+    from livesubs.audio.selection import select_microphone
+
+    print(title, file=sys.stderr)
+    return select_microphone(entries, preferred=preferred)
 
 
 # --- source selection ----------------------------------------------------------

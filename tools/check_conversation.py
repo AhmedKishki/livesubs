@@ -12,8 +12,8 @@ Usage::
         recordings/demo-20261023-101500
 
 The stem is the session's recording name without a language or extension. Every
-``STEM.*.srt`` beside it is checked. The transcript is the file named after the
-conversation's languages, such as ``.en+de.srt``.
+``STEM.*.srt`` beside it is checked. The raw transcript is ``.source.srt``.
+Use ``--source-code en+de`` explicitly for legacy raw transcripts.
 
 A line's language is guessed from its function words, so a line of one or two words is
 counted as too short to tell rather than as right or wrong.
@@ -39,6 +39,8 @@ def _turns(path: Path) -> list[Turn]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--turns", required=True, type=Path, help="the splice manifest")
+    parser.add_argument("--source-code", default="source", choices=("source", "en+de"),
+                        help="raw transcript suffix; use en+de for legacy recordings")
     parser.add_argument("stem", type=Path, help="the session's subtitle files, without .LANG.srt")
     args = parser.parse_args(argv)
 
@@ -50,7 +52,9 @@ def main(argv: list[str] | None = None) -> int:
     for path in files:
         code = path.suffixes[-2].lstrip(".")
         # The transcript is held to each turn's language; a target to its own.
-        expected = None if "+" in code else code
+        if code not in {args.source_code, "en", "de", "ar"}:
+            continue
+        expected = None if code == args.source_code else code
         check = check_languages(code, read_cues(path), turns, expected=expected)
         print(check.format_text(turns))
     return 0

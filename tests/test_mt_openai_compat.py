@@ -368,11 +368,22 @@ def test_every_pairing_gets_its_own_cacheable_prompt() -> None:
     assert build_system_prompt(source="de", target="en") == prompts[("de", "en")]
 
 
-def test_translating_a_language_into_itself_is_refused() -> None:
-    with pytest.raises(ValueError, match="into itself"):
-        build_system_prompt(source="de", target="de")
-    with pytest.raises(ValueError, match="into itself"):
-        OpenAiCompatMt(model="m", client=object(), source_language="en", target_language="en")
+def test_same_target_conservative_rendering_uses_subtitle_prompt() -> None:
+    prompt = build_system_prompt(source="de", target="de")
+    assert "already in German" in prompt
+    adapter = OpenAiCompatMt(
+        model="m", client=object(), source_language="en", target_language="en"
+    )
+    assert adapter._request == "Subtitle this in English"
+
+
+async def test_context_includes_previous_subtitles_not_only_model_translations() -> None:
+    captured: list = []
+    adapter = _adapter(captured=captured)
+    [chunk async for chunk in adapter.translate("Now", MtContext(target_context=["Vorher"]))]
+    message = captured[0]["messages"][1]["content"]
+    assert "Previous German subtitles/output" in message
+    assert "Your own previous" not in message
 
 
 def test_an_unknown_language_is_refused() -> None:

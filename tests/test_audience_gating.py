@@ -29,11 +29,13 @@ from support import (
     wait_until,
 )
 
+from livesubs.asr.base import AsrConfig
 from livesubs.audio.synthetic import SpeechLikeSource
 from livesubs.events import SegmentMessage
 from livesubs.hub import ClientRole
 from livesubs.mt.base import MtChunk, MtContext
 from livesubs.mt.passthrough import PassthroughMt
+from livesubs.pipeline.records import PipelineConfig, SourceSegment
 
 
 @pytest.fixture(params=MODES, ids=MODE_IDS)
@@ -59,6 +61,10 @@ def gated(mode, mt=None, **kwargs):
     table = translators(mode)
     if mt is not None:
         table[first] = mt
+    # These tests exercise paid translation cancellation, not transcription routing.
+    # The scripted recogniser emits English. A contradictory German pin must
+    # conservatively require MT, even for an English target.
+    kwargs.setdefault("config", PipelineConfig(asr=AsrConfig(language="de")))
     return make_gated(translators=table, source_language=speaker, **kwargs)
 
 
@@ -444,7 +450,7 @@ def with_recogniser(mode, asr, *, mt=None, factory=None, source=None):
         asr_factory=factory,
         translators={first: mt if mt is not None else PassthroughMt(), other: PassthroughMt},
         source_language=speaker,
-        config=PipelineConfig(telemetry_interval_ms=1000),
+        config=PipelineConfig(telemetry_interval_ms=1000, asr=AsrConfig(language="de")),
         require_audience=True,
     )
 
@@ -452,9 +458,8 @@ def with_recogniser(mode, asr, *, mt=None, factory=None, source=None):
 async def test_disconnect_during_blocked_warm_cancels_the_warm(mode) -> None:
     """A viewer who leaves mid-warm must cancel the billed warm promptly.
 
-    The recogniser is opened independently of the warm, so with the audience now empty it
-    is torn down too; the guarantees under test are that no worker is started, no warm
-    keeps running, and the warm latch is not set by the aborted call.
+    The worker starts without warming. Its first translation owns the cancellable warm;
+    losing demand cancels that work and does not set the warmed latch.
     """
 
     mt = BlockingWarmMt()
@@ -465,6 +470,8 @@ async def test_disconnect_during_blocked_warm_cancels_the_warm(mode) -> None:
 
     async with running(pipeline, hub):
         reader = hub.subscribe(viewer(language))
+        await wait_until(lambda: pipeline._workers[language].active)
+        pipeline._dispatch(SourceSegment(0, "unlabelled speech", 0, 100))
         await wait_until(lambda: mt.warm_started.is_set())
 
         hub.unsubscribe(reader)

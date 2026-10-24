@@ -36,7 +36,7 @@ class OneLinePublisher:
     """Publishes one line in each language it declares, with the speaker's words, then waits."""
 
     def __init__(self, *languages: str) -> None:
-        self.supported_languages = languages or ("de",)
+        self.supported_languages = ("en", "de", "ar")
 
     async def run(self, hub: Hub, *, session_id: str, stop: asyncio.Event) -> None:
         for language in self.supported_languages:
@@ -90,7 +90,7 @@ async def messages_of(url: str, count: int) -> list[dict]:
 
 
 #: ``(speaker, default language, the optional second language)``.
-MODES = [("en", "de", "ar"), ("de", "en", "ar"), ("en+de", "en", "de")]
+MODES = [("en", "en", "ar"), ("de", "en", "ar"), ("auto", "en", "de")]
 MODE_IDS = ["english-speaker", "german-speaker", "conversation"]
 
 
@@ -106,12 +106,14 @@ async def test_a_language_the_publisher_cannot_produce_is_refused_with_a_code_th
     """The viewer stops retrying only if this code reaches it."""
 
     async with serving(OneLinePublisher(default), speaker) as base:
-        assert await close_code_of(f"{base}/ws/demo?role=viewer_{optional}") == 4403
+        assert await close_code_of(f"{base}/ws/demo?role=viewer_fr") == 4403
 
 
-async def test_the_speakers_own_language_is_never_offered_as_a_subtitle() -> None:
+async def test_the_speakers_own_language_can_supply_filtered_subtitles() -> None:
     async with serving(OneLinePublisher("de", "ar"), "en") as base:
-        assert await close_code_of(f"{base}/ws/demo?role=viewer_en") == 4403
+        messages = await messages_of(f"{base}/ws/demo?role=viewer_en", 3)
+        assert messages[2]["data"]["text"] == LINES["en"]
+        assert messages[2]["data"]["src"] is None
 
 
 @pytest.mark.parametrize(("speaker", "default", "optional"), MODES, ids=MODE_IDS)
@@ -119,7 +121,7 @@ async def test_a_refused_socket_creates_no_demand(
     speaker: str, default: str, optional: str
 ) -> None:
     async with serving(OneLinePublisher(default), speaker) as base:
-        await close_code_of(f"{base}/ws/demo?role=viewer_{optional}")
+        await close_code_of(f"{base}/ws/demo?role=viewer_fr")
         await asyncio.sleep(0.05)
         # Asked over the same server, with an async client: a blocking call would stall
         # the loop that is also running the server.
@@ -137,8 +139,8 @@ async def test_a_plain_viewer_gets_the_default_language_without_the_source(
         messages = await messages_of(f"{base}/ws/demo", 3)
 
     assert [m["type"] for m in messages] == ["hello", "status", "segment"]
-    assert messages[0]["data"]["source"] == speaker
-    assert messages[0]["data"]["targets"] == [default, optional]
+    assert messages[0]["data"]["source"] == "en+de"
+    assert messages[0]["data"]["targets"] == ["en", "de", "ar"]
     assert messages[0]["data"]["language"] == default
     assert messages[2]["data"]["language"] == default
     assert messages[2]["data"]["text"] == LINES[default]
@@ -169,7 +171,7 @@ async def test_a_mistyped_role_is_a_plain_viewer_and_never_widens_what_is_receiv
     async with serving(OneLinePublisher("de", "ar")) as base:
         messages = await messages_of(f"{base}/ws/demo?role=viewer_AR", 3)
 
-    assert messages[2]["data"]["language"] == "de"
+    assert messages[2]["data"]["language"] == "en"
 
 
 async def test_a_heartbeat_reaches_an_idle_viewer(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -178,6 +180,8 @@ async def test_a_heartbeat_reaches_an_idle_viewer(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(websocket_routes, "HEARTBEAT_INTERVAL_S", 0.05)
 
     class Idle:
+        supported_languages = ("en", "de", "ar")
+
         async def run(self, hub, *, session_id, stop):
             await stop.wait()
 
@@ -197,7 +201,7 @@ async def test_what_a_viewer_reports_reaches_the_operators_figures() -> None:
     """The acknowledgements the overlay sends are aggregated, not just drained."""
 
     async with serving(OneLinePublisher("de", "ar")) as base:
-        async with websockets.connect(f"{base}/ws/demo", open_timeout=5) as ws:
+        async with websockets.connect(f"{base}/ws/demo?role=viewer_de", open_timeout=5) as ws:
             for _ in range(3):
                 await asyncio.wait_for(ws.recv(), timeout=5)
             await ws.send(

@@ -62,8 +62,12 @@ async def cancel_bounded(task: asyncio.Task, timeout: float = TASK_CANCEL_GRACE_
         return
 
     task.cancel()
+    done, _ = await asyncio.wait({task}, timeout=timeout)
+    if not done:
+        task.add_done_callback(_consume)
+        return
     try:
-        await asyncio.wait_for(task, timeout=timeout)
+        await task
     except (TimeoutError, asyncio.CancelledError):
         pass
     except Exception:
@@ -112,6 +116,8 @@ class Lifecycle:
         self._running = False
         self._generation: int | None = None
         self._failures = 0
+        self.revision = 0
+        self._active_revision = -1
         self._task: asyncio.Task[None] | None = None
 
     # --- what the owner can ask -----------------------------------------------------
@@ -123,6 +129,10 @@ class Lifecycle:
         return self._running
 
     @property
+    def exhausted(self) -> bool:
+        return self._failures > self._retry_limit
+
+    @property
     def current(self) -> bool:
         """Whether the running resource belongs to the audience that is here now."""
 
@@ -130,7 +140,14 @@ class Lifecycle:
             self._running
             and self._audience.present
             and self._generation == self._audience.generation
+            and self._active_revision == self.revision
         )
+
+    def invalidate(self) -> None:
+        """Replace configuration without treating the intentional change as failure."""
+        self.revision += 1
+        self._failures = 0
+        self._wake.set()
 
     def fail(self) -> None:
         """The running resource has died: stop it and start it again."""
@@ -146,6 +163,12 @@ class Lifecycle:
 
     def spawn(self) -> None:
         self._task = asyncio.create_task(self._supervise(), name=f"livesubs:life:{self.name}")
+
+    def adopt(self) -> None:
+        """Supervise a resource the owner has already opened synchronously."""
+        self._running = True
+        self._generation = self._audience.generation
+        self._active_revision = self.revision
 
     async def close(self, grace: float = TASK_CANCEL_GRACE_S) -> None:
         """Stop supervising. The owner stops the resource itself, in the order it needs."""
@@ -180,7 +203,7 @@ class Lifecycle:
                     await self._pause(generation)
                     continue
 
-                if self._running and self._generation == generation and not self._failed:
+                if self.current and not self._failed:
                     self._failures = 0
                     await self._pause(generation)
                     continue
@@ -188,11 +211,14 @@ class Lifecycle:
                 if self._running:
                     # Either it died, or it belongs to an audience that has since left and
                     # returned. Both mean a fresh start; only the first is a failure.
-                    died = self._failed
+                    died = (
+                        self._failed and self._active_revision == self.revision
+                        and self._generation == generation
+                    )
                     await self._release()
                     if died:
-                        self._trouble(f"{self.name} stopped unexpectedly")
                         self._failures += 1
+                        self._trouble(f"{self.name} stopped unexpectedly")
                         await self._back_off(generation)
                         continue
 
@@ -246,10 +272,14 @@ class Lifecycle:
         """Run one start, abandoning it if the audience changes underneath it."""
 
         audience = self._audience
+        revision = self.revision
         task = asyncio.create_task(self._start(generation), name=f"livesubs:start:{self.name}")
         try:
             while not task.done():
-                if not audience.present or audience.generation != generation or self._closing:
+                if (
+                    not audience.present or audience.generation != generation or self._closing
+                    or revision != self.revision
+                ):
                     break
                 changed = asyncio.create_task(audience.wait_change(generation))
                 woke = asyncio.create_task(self._wake.wait())
@@ -270,14 +300,22 @@ class Lifecycle:
 
         if task.cancelled():
             return _DEMAND_LOST
+        if not task.done():
+            return _DEMAND_LOST
         error = task.exception()
+        if error is not None and revision != self.revision:
+            return _DEMAND_LOST
         if error is None:
-            if self._closing or not audience.present or audience.generation != generation:
+            if (
+                self._closing or not audience.present or audience.generation != generation
+                or revision != self.revision
+            ):
                 # Opened just as the audience left. It must not be left running for nobody.
                 await self._stop()
                 return _DEMAND_LOST
             self._running = True
             self._generation = generation
+            self._active_revision = revision
             return _OPENED
         if isinstance(error, DemandChanged):
             return _DEMAND_LOST

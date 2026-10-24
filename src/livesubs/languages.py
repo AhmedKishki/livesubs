@@ -1,27 +1,13 @@
-"""Languages, and the modes that pair them.
+"""Language metadata and recognition modes with a fixed English/German/Arabic offer.
 
-A *mode* says who is speaking and who may listen in what: an English speaker with German
-or Arabic listeners, a German speaker with English or Arabic listeners, or a conversation
-whose speakers switch between English and German, with English, German or Arabic listeners.
-Everything that used to assume "English in, German out" asks the session's mode instead, so
-the pipeline, the hub, the wire format and the viewer carry no language of their own.
-
-A conversation's ``source`` names every language spoken, joined by ``+``: ``en+de``. Each
-listener still reads one language throughout, whoever is speaking, so every segment goes to
-every listened-to language's translator, including the one it was spoken in.
-
-Language metadata lives here and nowhere else: the name a translation prompt uses, the
-name a viewer sees in its picker, the writing direction. The first target of a mode is the
-one a plain QR scan reaches; every other target needs its explicit role, so a listener
-never lands in a language by accident.
-
-Adding a language is an entry in ``LANGUAGES``. Adding a mode is an entry in ``MODES``.
-Neither needs an edit anywhere else, except the viewer's interface strings for a new
-language in ``web/static/language.js``.
+``auto`` is a recognition setting, never a language code. Its adapter recognition
+language is ``en+de``. Manual pins change recognition, not subtitle availability.
+The session's fallback is configured independently of target order.
 """
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -146,31 +132,24 @@ class Mode:
         return f"{speakers}, {' or '.join(listeners)} subtitles"
 
     def narrowed(self, targets: Sequence[str]) -> Mode:
-        """The same speaker with fewer listeners' languages, in the order given.
+        """Accept a legacy full offer, but reject narrowing or duplicate entries."""
 
-        For a deployment that wants, say, German only. Every entry must already be a
-        target of the mode: a mode cannot be widened, because no pairing of languages is
-        supported that it does not list.
-        """
-
-        chosen = tuple(dict.fromkeys(targets))
+        chosen = tuple(targets)
         if not chosen:
             return self
-        extra = [code for code in chosen if code not in self.targets]
-        if extra:
+        if len(chosen) != 3 or set(chosen) != {"en", "de", "ar"}:
             raise ValueError(
-                f"{', '.join(extra)} cannot be a target when the speakers use "
-                f"{names(self.spoken)}; this mode offers {', '.join(self.targets)}"
+                "remove session.targets: every session offers en, de, ar; "
+                "subsets, duplicates and unsupported targets are not supported"
             )
-        return Mode(self.source, chosen)
+        return self
 
 
-#: The supported pairings, keyed by the language the speaker uses, or by a conversation's
-#: languages. The recogniser switches between English and German in one stream but cannot
-#: add Arabic, so Arabic is only ever read.
+#: Supported recognition settings. Spoken Arabic is outside the application scope.
 MODES: dict[str, Mode] = {
-    "en": Mode(source="en", targets=("de", "ar")),
-    "de": Mode(source="de", targets=("en", "ar")),
+    "auto": Mode(source="en+de", targets=("en", "de", "ar")),
+    "en": Mode(source="en", targets=("en", "de", "ar")),
+    "de": Mode(source="de", targets=("en", "de", "ar")),
     "en+de": Mode(source="en+de", targets=("en", "de", "ar")),
 }
 
@@ -178,6 +157,9 @@ MODES: dict[str, Mode] = {
 def mode_for(speaker: str, targets: Sequence[str] = ()) -> Mode:
     """The mode for a speaker language, optionally narrowed to some of its targets."""
 
+    if speaker == "en+de":
+        warnings.warn("session.speaker en+de is deprecated; use auto instead", stacklevel=2)
+        speaker = "auto"
     try:
         mode = MODES[speaker]
     except KeyError:

@@ -4,11 +4,8 @@
 // one laptop, and adding a bundler to a lecture deployment is real operational
 // risk for little gain.
 //
-// A plain QR scan reaches the session's default language. Any other language is an
-// opt-in carried entirely by `?lang=<code>`, which selects the `viewer_<code>` role so
-// the server sends that language and nothing else. The URL is authoritative: no language
-// is read from or written to localStorage, so a remembered experiment can never turn
-// one viewer into another.
+// Resolve a language once from the URL, browser preferences or operator fallback.
+// Its explicit role stays pinned across reconnects; no language enters localStorage.
 
 import { bindPageLifecycle, ViewerClient } from "./client.js";
 import {
@@ -113,41 +110,6 @@ function buildControls(overlay, session, language, strings) {
     return fieldset;
   }
 
-  // The language picker, offered only when there is something to choose between. A plain
-  // select, labelled by each language's name in that language, so it needs no translated
-  // chrome of its own.
-  if (session.languages.length > 1) {
-    const languageFieldset = document.createElement("fieldset");
-    const languageCaption = document.createElement("legend");
-    languageCaption.textContent = strings.language;
-    const select = document.createElement("select");
-    select.className = "language-select";
-    select.setAttribute("aria-label", strings.language);
-    for (const code of session.languages) {
-      const option = document.createElement("option");
-      option.value = code;
-      option.textContent = nativeNameOf(code, session);
-      option.setAttribute("lang", code);
-      select.append(option);
-    }
-    // A language the session does not offer matches no option, and the picker says so
-    // by showing none rather than naming something else.
-    select.value = language;
-    if (!isOffered(language, session)) select.selectedIndex = -1;
-    // An explicit change navigates to the new URL rather than reconnecting in place. A
-    // full navigation tears the old page, socket and timers down through the normal
-    // unload path, so nothing is left reconnecting behind the new view, and the browser
-    // history records the choice.
-    select.addEventListener("change", () => {
-      if (select.value === language) return;
-      window.location.assign(
-        viewerUrlWithLanguage(window.location.href, select.value, session.default),
-      );
-    });
-    languageFieldset.append(languageCaption, select);
-    panel.append(languageFieldset);
-  }
-
   panel.append(
     group(strings.fontSize, FONT_STEPS, overlay.prefs.fontScale, (v) => STEP_LABELS[v] ?? String(v),
       (value) => ({ fontScale: value })),
@@ -173,6 +135,26 @@ function buildControls(overlay, session, language, strings) {
 
   wrap.append(toggle, panel);
   return wrap;
+}
+
+export function buildLanguageButtons(session, language, strings) {
+  const group = document.createElement("nav");
+  group.className = "viewer-languages";
+  group.setAttribute("aria-label", strings.language);
+  for (const code of ["en", "de", "ar"]) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = nativeNameOf(code, session);
+    button.lang = code;
+    button.dir = "auto";
+    button.setAttribute("data-language", code);
+    button.setAttribute("aria-pressed", String(code === language));
+    button.addEventListener("click", () => {
+      window.location.assign(viewerUrlWithLanguage(window.location.href, code));
+    });
+    group.append(button);
+  }
+  return group;
 }
 
 async function main() {
@@ -202,7 +184,7 @@ async function main() {
   }
   pill.classList.remove("is-visible");
 
-  const language = chooseLanguage(requested, session);
+  const language = chooseLanguage(requested, session, navigator);
   const strings = stringsFor(language);
   const dir = directionOf(language, session);
   document.documentElement.lang = language;
@@ -219,7 +201,8 @@ async function main() {
     onAck: (payload) => client?.send(payload),
   });
 
-  document.body.append(root, buildControls(overlay, session, language, strings));
+  document.body.append(root, buildLanguageButtons(session, language, strings),
+    buildControls(overlay, session, language, strings));
 
   // Do not open a socket for a language the session cannot produce: the server would
   // refuse it with close code 4403, and a refused socket is a way to learn what the
@@ -254,4 +237,4 @@ async function main() {
   client.start();
 }
 
-main();
+if (typeof window !== "undefined" && typeof document !== "undefined") main();

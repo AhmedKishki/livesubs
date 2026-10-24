@@ -7,6 +7,7 @@
 // other, so a console whose socket has dropped still shows the numbers, and the reverse.
 
 import { ViewerClient } from "./client.js";
+import { bindSessionControls } from "./controls.js";
 import { directionOf } from "./language.js";
 import {
   deriveAlerts,
@@ -59,6 +60,8 @@ function makeAdminView(session) {
   const srcEl = $("live-src");
   const historyEl = $("history");
   const errorsEl = $("errors");
+  const controls = bindSessionControls(session.id, $);
+  controls.reconcile(session);
 
   const names = Object.fromEntries((session.targets ?? []).map((t) => [t.code, t.name]));
   const nameOf = (code) => names[code] ?? code.toUpperCase();
@@ -285,6 +288,7 @@ function makeAdminView(session) {
     },
 
     renderStats(stats) {
+      controls.reconcile(stats.session);
       const status = overallStatus(stats.session);
       const overall = $("overall");
       overall.dataset.status = status;

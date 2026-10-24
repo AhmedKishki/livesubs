@@ -280,6 +280,8 @@ def record(
     )
 
     for item in segments:
+        from livesubs.pipeline.records import SourceSegment
+        recorder.record_source(SourceSegment(item.seq, item.src, item.start_ms, item.end_ms))
         recorder(item)
     recorder.close()
 
@@ -304,8 +306,8 @@ def test_both_languages_are_written_in_both_formats(tmp_path: Path) -> None:
     assert sorted(path.name for path in recorder.paths) == [
         f"{STEM}.de.srt",
         f"{STEM}.de.vtt",
-        f"{STEM}.en.srt",
-        f"{STEM}.en.vtt",
+        f"{STEM}.source.srt",
+        f"{STEM}.source.vtt",
     ]
     assert all(path.exists() for path in recorder.paths)
     assert recorder.errors == {}
@@ -315,7 +317,7 @@ def test_each_language_file_holds_its_own_text(tmp_path: Path) -> None:
     _, directory = record(tmp_path, segment(0, 0, 1500, "hello there", "hallo"))
 
     assert read_cues(directory, "de")[0][3] == "hallo"
-    assert read_cues(directory, "en")[0][3] == "hello there"
+    assert read_cues(directory, "source")[0][3] == "hello there"
 
 
 def test_both_languages_share_identical_timings(tmp_path: Path) -> None:
@@ -328,7 +330,7 @@ def test_both_languages_share_identical_timings(tmp_path: Path) -> None:
     )
 
     german = read_cues(directory, "de")
-    source = read_cues(directory, "en")
+    source = read_cues(directory, "source")
 
     assert [cue[1:3] for cue in german] == [cue[1:3] for cue in source]
 
@@ -362,7 +364,7 @@ def test_cues_are_ordered_and_do_not_overlap(tmp_path: Path) -> None:
 def test_the_vtt_files_are_well_formed_too(tmp_path: Path) -> None:
     _, directory = record(tmp_path, segment(0, 0, 1500, "hello", "hallo"))
 
-    for code in ("en", "de"):
+    for code in ("source", "de"):
         text = (directory / f"{STEM}.{code}.vtt").read_text(encoding="utf-8")
         assert text.startswith("WEBVTT\n\n")
         assert " --> " in text
@@ -401,7 +403,7 @@ def test_every_target_language_gets_its_own_files(tmp_path: Path) -> None:
     )
 
     names = sorted(path.name for path in recorder.paths)
-    assert names == [f"{STEM}.{code}.{fmt}" for code in ("ar", "de", "en") for fmt in ("srt", "vtt")]
+    assert names == [f"{STEM}.{code}.{fmt}" for code in ("ar", "de", "source") for fmt in ("srt", "vtt")]
     assert read_cues(directory, "de")[0][3] == "hallo"
     assert read_cues(directory, "ar")[0][3] == "مرحبا"
 
@@ -416,7 +418,7 @@ def test_the_speakers_words_are_written_once_however_many_languages_translated_t
         target_codes=("de", "ar"),
     )
 
-    assert [cue[3] for cue in read_cues(directory, "en")] == ["hello there"]
+    assert [cue[3] for cue in read_cues(directory, "source")] == ["hello there"]
 
 
 def test_a_room_that_read_only_one_language_still_gets_a_transcript(tmp_path: Path) -> None:
@@ -428,7 +430,7 @@ def test_a_room_that_read_only_one_language_still_gets_a_transcript(tmp_path: Pa
         target_codes=("de", "ar"),
     )
 
-    assert [cue[3] for cue in read_cues(directory, "en")] == ["hello there"]
+    assert [cue[3] for cue in read_cues(directory, "source")] == ["hello there"]
     assert [cue[3] for cue in read_cues(directory, "ar")] == ["مرحبا"]
 
 
@@ -443,8 +445,8 @@ def test_a_german_speaker_is_recorded_as_german_with_english_and_arabic_files(
         target_codes=("en", "ar"),
     )
 
-    assert {path.name.split(".")[1] for path in recorder.paths} == {"de", "en", "ar"}
-    assert read_cues(directory, "de")[0][3] == "Guten Tag zusammen"
+    assert {path.name.split(".")[1] for path in recorder.paths} == {"source", "en", "ar"}
+    assert read_cues(directory, "source")[0][3] == "Guten Tag zusammen"
     assert read_cues(directory, "en")[0][3] == "good day everyone"
 
 

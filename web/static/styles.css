@@ -144,7 +144,7 @@ body {
 
 .status-pill {
   position: fixed;
-  top: 1.2vh;
+  top: calc(max(12px, env(safe-area-inset-top)) + 54px);
   left: 50%;
   transform: translateX(-50%);
   padding: 0.35em 0.9em;
@@ -249,30 +249,6 @@ body {
 .controls-panel button[aria-pressed="true"] {
   background: rgba(255, 255, 255, 0.85);
   color: #000;
-}
-
-/* The language picker is the one native control in the panel. It keeps the
- * panel's dark surface and inherits the page direction, so a right-to-left page
- * lays the picker out right-to-left without extra rules.
- *
- * The fill is opaque on purpose. The open list is drawn by the browser on its own
- * surface, and a translucent fill there is white, so the white text was unreadable
- * against it. The options carry the same colours for the browsers that paint them
- * separately, and `color-scheme` makes the list use dark system colours. */
-.controls-panel .language-select {
-  width: 100%;
-  padding: 0.3em 0.4em;
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  background: #1c1f24;
-  color: #fff;
-  color-scheme: dark;
-  font: inherit;
-}
-
-.controls-panel .language-select option {
-  background: #1c1f24;
-  color: #fff;
 }
 
 /* --- static pages (landing and operator console) --------------------------- */
@@ -602,3 +578,41 @@ body {
     transition: none !important;
   }
 }
+/* Native-language choices stay outside the collapsible display controls. */
+.viewer-languages {
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 6px;
+  z-index: 2147483647;
+}
+.viewer-languages button {
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid #999;
+  border-radius: 8px;
+  color: #fff;
+  background: #222;
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+.viewer-languages button[aria-pressed="true"] {
+  background: #fff;
+  color: #111;
+  border-color: #fff;
+  font-weight: 700;
+}
+.viewer-languages button:focus-visible { outline: 3px solid #7ec8ff; outline-offset: 3px; }
+.session-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-block: 20px;
+}
+.session-controls select { min-height: 44px; font: inherit; padding: 6px; }
+.session-controls p { flex-basis: 100%; margin: 0; }
+#settings-error { color: #ffb5b5; }

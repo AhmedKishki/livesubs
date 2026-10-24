@@ -36,15 +36,15 @@ from livesubs.languages import LANGUAGES
 from livesubs.mt.base import MtContext, MtProvider
 from livesubs.pipeline.health import Health
 from livesubs.pipeline.lifecycle import DemandChanged, cancel_bounded
-from livesubs.pipeline.records import Committed, PipelineConfig
+from livesubs.pipeline.records import Committed, PipelineConfig, SourceSegment
 from livesubs.pipeline.stats import LanguageStats
 
 __all__ = ["TargetWorker", "WorkerEnv"]
 
 logger = logging.getLogger(__name__)
 
-#: One committed source segment: ``(seq, text, audio start ms, audio end ms)``.
-Item = tuple[int, str, int, int]
+#: One immutable committed source segment, including its frozen language evidence.
+Item = SourceSegment
 
 
 @dataclass(slots=True)
@@ -152,21 +152,11 @@ class TargetWorker:
     # --- starting and stopping -------------------------------------------------------
 
     async def start(self, epoch: int | None) -> None:
-        """Warm the translator and start the worker, for the audience of ``epoch``.
-
-        Warming is billed, so it is checked against the audience on either side: a viewer
-        who leaves during the warm leaves no worker translating for nobody. Raises
-        :class:`DemandChanged` then, and leaves nothing running.
-        """
+        """Start ordered output without constructing or warming paid MT."""
 
         self._require_env()
         self.epoch = epoch
         try:
-            provider = self._build()
-            if not self.warmed:
-                await provider.warm()
-                self._check_demand()
-                self.warmed = True
             self._check_demand()
 
             self._reset()
@@ -234,7 +224,7 @@ class TargetWorker:
 
     # --- taking work ----------------------------------------------------------------
 
-    def offer(self, item: Item) -> None:
+    def offer(self, item: Item | tuple[int, str, int, int]) -> None:
         """Queue a committed segment, if a viewer of this language is waiting for it.
 
         A worker's own flag is not enough: it can have retired without being cleared yet,
@@ -244,7 +234,8 @@ class TargetWorker:
 
         if not self.active or not self.demand_is_current():
             return
-        self.queue.append(item)
+        # Low-level callers predating language evidence remain conservative MT callers.
+        self.queue.append(item if isinstance(item, SourceSegment) else SourceSegment(*item))
         self._shed()
         self._wake.set()
         self.check_lag()
@@ -295,8 +286,16 @@ class TargetWorker:
                     # supervisor will stop this worker; nothing is translated meanwhile.
                     self.queue.clear()
                     continue
-                seq, src, start_ms, end_ms = self.queue.popleft()
-                await self._translate(seq, src, start_ms, end_ms)
+                item = self.queue.popleft()
+                if item.language in {"en", "de"} and item.language == self.language:
+                    self._publish(
+                        item.seq, SegmentState.FINAL, item.text,
+                        src=item.text, audio_ms=item.end_ms,
+                    )
+                    self._remember(item.text, item.text)
+                    self._emit(item.seq, item.start_ms, item.end_ms, item.text, item.text)
+                else:
+                    await self._translate(item.seq, item.text, item.start_ms, item.end_ms)
                 self.check_lag()
                 continue
 
@@ -314,7 +313,6 @@ class TargetWorker:
         if not self.demand_is_current():
             return
 
-        provider = self._build()
         context = MtContext(
             source_context=list(self.recent_src),
             target_context=list(self.recent_target),
@@ -327,10 +325,20 @@ class TargetWorker:
         for attempt in range(1 + max(0, env.config.mt_retries)):
             progress.text = ""
             try:
+                self._check_demand()
                 async with _deadline(env.config.mt_deadline_s):
+                    provider = self._build()
+                    if not self.warmed:
+                        await provider.warm()
+                        self._check_demand()
+                        self.warmed = True
+                    self._check_demand()
                     await self._stream(provider, seq, src, context, end_ms, progress)
+                    self._check_demand()
                 failed = False
                 break
+            except DemandChanged:
+                return
             except TimeoutError:
                 logger.warning(
                     "translation of segment %d for %s ran past its deadline", seq, self.language
@@ -377,6 +385,7 @@ class TargetWorker:
 
         began = time.monotonic()
         async for chunk in provider.translate(src, context):
+            self._check_demand()
             if chunk.text_delta:
                 if not chunks:
                     self.stats.first_word_ms.add((time.monotonic() - began) * 1000.0)

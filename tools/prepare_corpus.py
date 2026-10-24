@@ -256,7 +256,7 @@ def main(argv: list[str] | None = None) -> int:
     print("Score a session with:")
     print(
         "  uv run python tools/verify_against_reference.py"
-        f" --reference {reference_path} --hypothesis recordings/<stem>.en.srt"
+        f" --reference {reference_path} --hypothesis recordings/<stem>.source.srt"
         " --hypothesis-de recordings/<stem>.de.srt"
     )
     return 0

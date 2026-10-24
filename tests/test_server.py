@@ -25,7 +25,7 @@ TICK_S = 0.05
 
 
 #: ``(speaker, default language, optional language)`` for each mode.
-MODES = [("en", "de", "ar"), ("de", "en", "ar"), ("en+de", "en", "de")]
+MODES = [("en", "en", "ar"), ("de", "en", "ar"), ("auto", "en", "de")]
 MODE_IDS = ["english-speaker", "german-speaker", "conversation"]
 
 
@@ -33,7 +33,7 @@ class TickingPublisher:
     """Publishes one committed segment per language every 50 ms until stopped."""
 
     def __init__(self, *languages: str) -> None:
-        self.supported_languages = languages or ("de", "ar")
+        self.supported_languages = ("en", "de", "ar")
         self.seq = 0
 
     async def run(self, hub: Hub, *, session_id: str, stop: asyncio.Event) -> None:
@@ -130,9 +130,9 @@ def test_session_metadata_matches_the_wire_contract(
     with make_client(TickingPublisher(default, optional), speaker) as client:
         payload = client.get("/api/session").json()
         assert payload["id"] == "demo"
-        assert payload["source"] == speaker
+        assert payload["source"] == "en+de"
         assert payload["default"] == default
-        assert payload["languages"] == [default, optional]
+        assert payload["languages"] == ["en", "de", "ar"]
         assert payload["version"] == 2
         assert payload["ws_url"] == "/ws/demo"
 
@@ -158,15 +158,13 @@ def test_the_session_says_it_records_only_when_the_publisher_does() -> None:
         assert client.get("/api/session").json()["recording"] is False
 
 
-def test_a_publisher_that_declares_nothing_offers_only_the_default_language() -> None:
+def test_a_publisher_that_declares_nothing_is_rejected() -> None:
     class Plain:
         async def run(self, hub, *, session_id, stop):
             await stop.wait()
 
-    with make_client(Plain(), "de") as client:
-        payload = client.get("/api/session").json()
-
-    assert payload["languages"] == ["en"]
+    with pytest.raises(ValueError, match="all subtitle languages"):
+        make_client(Plain(), "de")
 
 
 def test_qr_url_points_at_the_viewer_page_over_plain_http() -> None:
@@ -264,9 +262,9 @@ def test_stats_describe_the_audience_and_the_host_without_any_lecture_text() -> 
         payload = client.get("/api/stats").json()
 
     assert payload["session"]["id"] == "demo" and payload["session"]["running"] is True
-    assert payload["session"]["languages"] == ["de", "ar"]
+    assert payload["session"]["languages"] == ["en", "de", "ar"]
     assert payload["audience"]["viewers"] == 1
-    assert payload["audience"]["viewers_by_language"] == {"de": 1, "ar": 0}
+    assert payload["audience"]["viewers_by_language"] == {"en": 1, "de": 0, "ar": 0}
     assert payload["audience"]["messages_sent"] >= 1 and payload["audience"]["bytes_sent"] > 0
     assert payload["server"]["open_files"] >= 3 and payload["server"]["loop_lag_ms"]["count"] >= 0
     # A publisher that cannot describe itself contributes nothing rather than an error.
@@ -318,8 +316,8 @@ def test_viewer_gets_identity_health_then_subtitles_without_the_source(
         hello = ws.receive_json()
         assert hello["type"] == "hello"
         assert hello["data"]["session_id"] == "demo"
-        assert hello["data"]["source"] == speaker
-        assert hello["data"]["targets"] == [default, optional]
+        assert hello["data"]["source"] == "en+de"
+        assert hello["data"]["targets"] == ["en", "de", "ar"]
         assert hello["data"]["language"] == default
 
         assert ws.receive_json()["type"] == "status"
@@ -359,28 +357,27 @@ def test_admin_does_receive_the_source_and_every_language(
         make_client(TickingPublisher(default, optional), speaker) as client,
         client.websocket_connect("/ws/demo?role=admin") as ws,
     ):
-        seen = [next_message_of_type(ws, "segment")["data"] for _ in range(4)]
+        seen = [next_message_of_type(ws, "segment")["data"] for _ in range(6)]
 
     assert all(segment["src"] is not None for segment in seen)
-    assert {segment["language"] for segment in seen} == {default, optional}
+    assert {segment["language"] for segment in seen} == {"en", "de", "ar"}
 
 
-@pytest.mark.parametrize("role", ["superuser", "viewer_AR", "viewer_", "Admin", "viewer_xx"])
+@pytest.mark.parametrize("role", ["superuser", "viewer_AR", "viewer_", "Admin"])
 def test_an_unknown_role_is_treated_as_a_plain_viewer(role: str) -> None:
     with make_client() as client, client.websocket_connect(f"/ws/demo?role={role}") as ws:
         for _ in range(3):
             segment = next_message_of_type(ws, "segment")
-            assert segment["data"]["language"] == "de"
+            assert segment["data"]["language"] == "en"
             assert segment["data"]["src"] is None
 
 
-def test_a_language_outside_the_mode_is_refused_with_4403() -> None:
-    """An English speaker has no English subtitles to offer."""
+def test_an_unsupported_explicit_language_is_refused_with_4403() -> None:
 
     with make_client() as client:
         with (
             pytest.raises(WebSocketDisconnect) as refused,
-            client.websocket_connect("/ws/demo?role=viewer_en") as ws,
+            client.websocket_connect("/ws/demo?role=viewer_fr") as ws,
         ):
             ws.receive_json()
         assert refused.value.code == 4403
@@ -453,6 +450,8 @@ def test_admin_connection_is_not_counted_as_an_audience() -> None:
 
 
 class IdlePublisher:
+    supported_languages = ("en", "de", "ar")
+
     async def run(self, hub, *, session_id, stop):
         await stop.wait()
 
@@ -635,6 +634,8 @@ def test_healthz_answers_503_when_the_pipeline_has_died() -> None:
     """A probe that says 200 either way cannot be used to restart a dead pipeline."""
 
     class Dies:
+        supported_languages = ("en", "de", "ar")
+
         async def run(self, hub, *, session_id, stop):
             raise RuntimeError("capture exploded")
 
@@ -656,6 +657,8 @@ def test_a_failing_publisher_calls_the_failure_hook_once() -> None:
     called = []
 
     class Dies:
+        supported_languages = ("en", "de", "ar")
+
         async def run(self, hub, *, session_id, stop):
             raise RuntimeError("capture exploded")
 

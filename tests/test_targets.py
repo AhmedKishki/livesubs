@@ -30,6 +30,7 @@ from support import (
 
 from livesubs.hub import ClientRole
 from livesubs.mt.passthrough import PassthroughMt
+from livesubs.pipeline.records import SourceSegment
 
 
 @pytest.fixture(params=MODES, ids=MODE_IDS)
@@ -66,6 +67,14 @@ def room(mode, *, first_mt=None, other: Factory | None = None):
         translators={first: first_mt, second: other}, source_language=speaker
     )
     return pipeline, asr, first_mt, other, RecordingHub((first, second))
+
+
+async def offer_mt_source(pipeline, language: str) -> None:
+    """Exercise lazy warm explicitly, independently of recogniser timing/evidence."""
+
+    worker = pipeline._workers[language]
+    await wait_until(lambda: worker.active)
+    worker.offer(SourceSegment(0, "Source requiring translation", 0, 100, "unknown"))
 
 
 # --- a language is off until somebody reads it ---------------------------------------
@@ -165,6 +174,7 @@ async def test_leaving_during_a_blocked_warm_cancels_the_warm(mode) -> None:
 
     async with running(pipeline, hub):
         b = hub.subscribe(viewer(second))
+        await offer_mt_source(pipeline, second)
         await wait_until(lambda: warming.warm_started.is_set())
         hub.unsubscribe(b)
         await wait_until(lambda: warming.warm_cancelled.is_set(), timeout=5.0)
@@ -177,6 +187,7 @@ async def test_a_languages_reconnect_is_fresh_and_does_not_churn_the_rest(mode) 
 
     async with running(pipeline, hub, timeout=8.0):
         a = hub.subscribe(viewer(first))
+        await offer_mt_source(pipeline, first)
         await wait_until(lambda: bool(finals(hub, first)))
         assert first_mt.warms == 1
 
@@ -233,6 +244,7 @@ async def test_the_first_language_joining_a_room_that_reads_the_second_starts_wi
         assert first_mt.warms == 0
 
         a = hub.subscribe(viewer(first))
+        await offer_mt_source(pipeline, first)
         await wait_until(lambda: first_mt.warms == 1)
         await wait_until(lambda: bool(finals(hub, first)))
         # The recogniser was already open for the other language and was not rebuilt.
@@ -288,6 +300,7 @@ async def test_leaving_during_a_blocked_warm_keeps_the_other_language_running(mo
     async with running(pipeline, hub, timeout=8.0):
         b = hub.subscribe(viewer(second))
         a = hub.subscribe(viewer(first))
+        await offer_mt_source(pipeline, first)
         await wait_until(lambda: warming.warm_started.is_set())
         await wait_until(lambda: bool(finals(hub, second)))
 

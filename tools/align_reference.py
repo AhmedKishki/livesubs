@@ -15,12 +15,12 @@ Usage::
 
     # 1. Teach the pipeline where the speech is. Any approach does; this one is quick.
     uv run livesubs --serve --approach live-sim --audio file:samples/sample-16k-mono.wav@0
-    #    (its cues land in recordings/<stem>.en.srt)
+    #    (its raw source cues land in recordings/<stem>.source.srt)
 
     # 2. Lay the transcript onto those spans.
     uv run python tools/align_reference.py \\
         --reference samples/reference.en.txt \\
-        --timing recordings/sample.en.srt \\
+        --timing recordings/sample.source.srt \\
         --out samples/reference.en.timed.srt
 
     # 3. Translate it live, against the audio.

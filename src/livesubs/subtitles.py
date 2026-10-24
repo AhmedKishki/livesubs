@@ -1,7 +1,7 @@
 """Timestamped subtitle files, so a recording can be overlaid on a video.
 
-Every committed segment is written once in the speaker's language and once in each target
-language it was translated into. All the files carry the same cue timings, and those timings
+Every source commitment is written once to the raw source file, independently of successful
+target output. All the files carry the same cue timings, and those timings
 come from the **audio clock** rather than from wall time.
 
 That is the whole point of the design. The audio clock starts at zero on the first
@@ -26,7 +26,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from livesubs.pipeline.records import SourceSegment
 
 __all__ = [
     "Cue",
@@ -229,7 +232,7 @@ class SubtitleWriter:
 
 
 class SubtitleRecorder:
-    """Writes every committed segment to a file for the speaker and one per target language.
+    """Writes raw commitments separately from successful target output.
 
     Callable, so it can be handed to the pipeline directly as its segment sink. All
     the files share the recording stem, so they pair with the archived audio by name:
@@ -239,17 +242,15 @@ class SubtitleRecorder:
         demo-20260922-145157.wav        the audio the timings refer to
         demo-20260922-145157.de.srt     what a German viewer read
         demo-20260922-145157.ar.srt     what an Arabic viewer read
-        demo-20260922-145157.en.srt     what was actually said
+        demo-20260922-145157.source.srt what was actually said
         demo-20260922-145157.de.vtt     the same, for a browser <track>
 
     Both formats for every language, because the two are used by different tools and
     neither is a superset of the other in practice. The files are small text; the
     duplication is cheaper than a decision about which one someone will need.
 
-    The speaker's words are written once per segment, however many languages translated it,
-    and also when only one language did: they are recorded by whichever translation of the
-    segment arrives first, so a room that read only Arabic still gets a transcript of what
-    was said.
+    ``record_source`` receives ordered source commitments. The callable receives only
+    successful target output. Target failures cannot erase or reorder the raw transcript.
     """
 
     def __init__(
@@ -266,7 +267,7 @@ class SubtitleRecorder:
         self.source_code = source_code
         self.target_codes = tuple(target_codes)
 
-        codes = dict.fromkeys((source_code, *self.target_codes))
+        codes = dict.fromkeys(("source", *self.target_codes))
         self.writers: dict[tuple[str, CueFormat], SubtitleWriter] = {
             (code, fmt): SubtitleWriter(
                 self.directory / f"{stem}.{code}.{fmt}", fmt=fmt
@@ -275,6 +276,7 @@ class SubtitleRecorder:
             for fmt in formats
         }
         self._source_written: set[int] = set()
+        self._target_written: set[tuple[str, int]] = set()
 
     @property
     def paths(self) -> list[Path]:
@@ -295,12 +297,20 @@ class SubtitleRecorder:
     def __call__(self, segment: CueSource) -> None:
         """Record one committed segment. Matches ``LivePipeline.on_segment``."""
 
-        if segment.seq not in self._source_written:
-            self._source_written.add(segment.seq)
-            self._add(self.source_code, segment, segment.src)
+        key = (segment.language, segment.seq)
+        if key in self._target_written or segment.language not in self.target_codes:
+            return
+        self._target_written.add(key)
         self._add(segment.language, segment, segment.text)
 
-    def _add(self, code: str, segment: CueSource, text: str) -> None:
+    def record_source(self, segment: SourceSegment) -> None:
+        """Record an ordered source commitment, independently of target success."""
+        if segment.seq in self._source_written:
+            return
+        self._source_written.add(segment.seq)
+        self._add("source", segment, segment.text)
+
+    def _add(self, code: str, segment: CueSource | SourceSegment, text: str) -> None:
         if not text:
             return
         cue = Cue(start_ms=segment.start_ms, end_ms=segment.end_ms, text=text)

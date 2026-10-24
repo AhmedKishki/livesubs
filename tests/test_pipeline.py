@@ -465,9 +465,10 @@ def test_a_translator_that_cannot_keep_up_loses_the_oldest_segments_not_the_newe
     worker.active = True
 
     for seq in range(10):
-        pipeline._dispatch((seq, f"line {seq}", seq * 1000, seq * 1000 + 900))
+        from livesubs.pipeline.records import SourceSegment
+        pipeline._dispatch(SourceSegment(seq, f"line {seq}", seq * 1000, seq * 1000 + 900))
 
-    assert [item[0] for item in worker.queue] == [7, 8, 9]
+    assert [item.seq for item in worker.queue] == [7, 8, 9]
     assert worker.shed == 7
 
 
@@ -612,16 +613,16 @@ def test_the_pipeline_declares_the_languages_it_can_produce() -> None:
     assert make_pipeline().supported_languages == ("de",)
 
 
-def test_a_pipeline_needs_a_translator_and_cannot_translate_into_the_speakers_language() -> None:
+def test_a_pipeline_needs_a_target_but_allows_the_speakers_language() -> None:
     with pytest.raises(ValueError, match="at least one"):
         LivePipeline(source=SpeechLikeSource(), asr=StubAsr(), translators={})
-    with pytest.raises(ValueError, match="speaker's language"):
-        LivePipeline(
+    pipeline = LivePipeline(
             source=SpeechLikeSource(),
             asr=StubAsr(),
             translators={"en": PassthroughMt()},
             source_language="en",
-        )
+    )
+    assert pipeline.supported_languages == ("en",)
 
 
 def test_a_conversation_can_be_subtitled_in_the_languages_it_speaks() -> None:

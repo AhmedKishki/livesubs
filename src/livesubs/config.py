@@ -23,12 +23,13 @@ repr'd: API keys are ``SecretStr``.
 from __future__ import annotations
 
 import os
+import warnings
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, SecretStr, field_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -155,14 +156,39 @@ class SessionSettings(_Group):
 
     id: str = Field(default="demo", validation_alias="LIVESUBS_SESSION_ID")
     name: str = Field(default="Live subtitles", validation_alias="LIVESUBS_SESSION_NAME")
-    #: The language the presenter speaks. It picks the mode: an English speaker has German
-    #: or Arabic listeners, a German speaker has English or Arabic listeners, and ``en+de``,
-    #: a conversation that switches between them, has English, German or Arabic listeners.
-    speaker: str = Field(default="en", validation_alias="LIVESUBS_SESSION_SPEAKER")
-    #: Offer only some of the mode's target languages, in this order; the first is what a
-    #: plain QR scan gets. Empty means all of them.
+    #: Recognition intent, independent of the fixed three-language subtitle offer.
+    speaker: str = Field(default="auto", validation_alias="LIVESUBS_SESSION_SPEAKER")
+    default_language: str = Field(
+        default="en", validation_alias="LIVESUBS_SESSION_DEFAULT_LANGUAGE"
+    )
+    #: Deprecated compatibility declaration; a nonempty value must contain all targets.
     targets: list[str] = Field(default_factory=list)
     web_dir: Path | None = Field(default=None, validation_alias="LIVESUBS_WEB_DIR")
+
+    @field_validator("speaker")
+    @classmethod
+    def validate_speaker(cls, value: str) -> str:
+        if value == "en+de":
+            warnings.warn("session.speaker en+de is deprecated; use auto instead", stacklevel=2)
+            return "auto"
+        mode_for(value)
+        return value
+
+    @field_validator("default_language")
+    @classmethod
+    def validate_fallback(cls, value: str) -> str:
+        if value not in ("en", "de", "ar"):
+            raise ValueError("session.default_language must be en, de or ar")
+        return value
+
+    @field_validator("targets")
+    @classmethod
+    def validate_targets(cls, value: list[str]) -> list[str]:
+        if value:
+            mode_for("auto", value)
+            warnings.warn("session.targets is deprecated; remove session.targets", stacklevel=2)
+            return ["en", "de", "ar"]
+        return value
 
 
 class CaptureSettings(_Group):
@@ -457,7 +483,7 @@ class Settings(BaseSettings):
     def default_language(self) -> str:
         """The language a plain QR scan reaches."""
 
-        return self.mode.default_target
+        return self.session.default_language
 
     @property
     def web_dir(self) -> Path | None:
@@ -579,6 +605,7 @@ class Settings(BaseSettings):
         session_id: str | None = None,
         session_name: str | None = None,
         speaker: str | None = None,
+        default_language: str | None = None,
     ) -> Settings:
         """A copy of these settings with the session overridden.
 
@@ -589,11 +616,10 @@ class Settings(BaseSettings):
         ``unknown session: sample``). Overriding once, before anything is built from the
         settings, is what makes the flag mean one thing.
 
-        Choosing a different ``speaker`` also drops any narrowed ``targets`` from the file:
-        they were chosen for the other speaker, and the new mode's own languages apply.
+        Recognition and fallback overrides do not change subtitle availability.
         """
 
-        if session_id is None and session_name is None and speaker is None:
+        if all(value is None for value in (session_id, session_name, speaker, default_language)):
             return self
 
         update: dict[str, object] = {}
@@ -603,9 +629,11 @@ class Settings(BaseSettings):
             update["name"] = session_name
         if speaker is not None and speaker != self.session.speaker:
             update["speaker"] = speaker
-            update["targets"] = []
+        if default_language is not None:
+            update["default_language"] = default_language
 
-        return self.model_copy(update={"session": self.session.model_copy(update=update)})
+        session = SessionSettings.model_validate({**self.session.model_dump(), **update})
+        return self.model_copy(update={"session": session})
 
     def validate_for_startup(
         self,

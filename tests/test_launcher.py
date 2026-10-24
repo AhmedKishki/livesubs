@@ -50,6 +50,7 @@ def accept_keys(monkeypatch) -> None:
 
 @pytest.fixture(autouse=True)
 def isolated(tmp_path, monkeypatch):
+    monkeypatch.setattr(launcher, "_select_setting", lambda title, entries, preferred: preferred)
     missing_global = tmp_path / "missing-global.env"
     missing_project = tmp_path / "missing-project.env"
     monkeypatch.setattr(keystore, "global_env_path", lambda: missing_global)

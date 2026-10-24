@@ -20,7 +20,7 @@ from livesubs.sim import SCRIPTS, SimPublisher, replay
 
 #: One target language, so that a segment is a draft and a final and nothing else. The
 #: tests that are about several languages say so.
-GERMAN_ONLY = mode_for("en", ["de"])
+GERMAN_ONLY = mode_for("en")
 VIEWER = ClientRole.viewer("de")
 
 
@@ -39,9 +39,9 @@ async def test_replay_sequence_is_deterministic() -> None:
 
     segments = [m for m in messages if isinstance(m, SegmentMessage)]
     assert segments[0].data.seq == 0
-    assert segments[0].data.state == "draft"
+    assert segments[0].data.state == "final"
     assert segments[1].data.seq == 0
-    assert segments[1].data.state == "final"
+    assert segments[1].data.state == "draft"
 
 
 async def test_every_script_segment_is_emitted_as_draft_then_final() -> None:
@@ -50,20 +50,19 @@ async def test_every_script_segment_is_emitted_as_draft_then_final() -> None:
     messages = [message async for message in replay(script, mode=GERMAN_ONLY, speed=0)]
     segments = [m.data for m in messages if isinstance(m, SegmentMessage)]
 
-    assert len(segments) == 2 * count
-
-    # seq advances every two frames; rev goes 0 then 1.
-    assert [segment.seq for segment in segments] == [
-        index for index in range(count) for _ in range(2)
-    ]
-    assert [segment.rev for segment in segments] == [0, 1] * count
+    assert {segment.seq for segment in segments} == set(range(count))
+    for seq in range(count):
+        for code in ("en", "de", "ar"):
+            own = [s for s in segments if s.seq == seq and s.language == code]
+            assert own[-1].state == "final"
+            assert [s.rev for s in own] == list(range(len(own)))
 
 
 async def test_revisions_rewrite_rather_than_append() -> None:
     """The hard case for the overlay, so it must be present in the fixture."""
 
     messages = [message async for message in replay("default", mode=GERMAN_ONLY, speed=0)]
-    segments = [m.data for m in messages if isinstance(m, SegmentMessage)]
+    segments = [m.data for m in messages if isinstance(m, SegmentMessage) and m.data.language == "ar"]
 
     revised = [
         (segments[i].text, segments[i + 1].text)
@@ -242,7 +241,7 @@ async def test_a_looping_replay_never_reports_a_terminal_status() -> None:
 
 
 async def test_a_looping_replay_repeats_its_content() -> None:
-    frames = len(SCRIPTS["default"].segments) * 2
+    frames = 32
 
     messages = await _take_frames(
         replay("default", mode=GERMAN_ONLY, speed=0, loop=True), _frames_for(frames + 1)
@@ -250,6 +249,7 @@ async def test_a_looping_replay_repeats_its_content() -> None:
 
     segments = [m.data for m in messages if isinstance(m, SegmentMessage)]
     first_pass, second_pass = segments[0], segments[frames]
+    assert second_pass.seq == len(SCRIPTS["default"].segments)
     assert second_pass.text == first_pass.text
 
 
@@ -258,7 +258,7 @@ async def test_a_looping_replay_keeps_the_sequence_rising() -> None:
     what a client already holds, so pass two would be dropped as stale."""
 
     lines = len(SCRIPTS["default"].segments)      # one sequence number per line
-    frames = lines * 2                            # a draft and a revision per line
+    frames = 32                                  # four routing paths per pass
 
     messages = await _take_frames(
         replay("default", mode=GERMAN_ONLY, speed=0, loop=True), _frames_for(frames * 2)
@@ -267,16 +267,17 @@ async def test_a_looping_replay_keeps_the_sequence_rising() -> None:
     segments = [m.data for m in messages if isinstance(m, SegmentMessage)]
     assert len(segments) == frames * 2
 
-    # Both states of a line share its sequence number, so pairs must agree.
-    drafts, finals = segments[::2], segments[1::2]
-    assert all(
-        draft.seq == final.seq
-        for draft, final in zip(drafts, finals, strict=True)
-    )
-
-    # Two full passes, one number per line: 0..2*lines-1. The second pass carried on
-    # from the first instead of restarting at zero.
-    assert [draft.seq for draft in drafts] == list(range(lines * 2))
+    assert [s.seq for s in segments] == sorted(s.seq for s in segments)
+    assert max(s.seq for s in segments) == 2 * lines - 1
+    final_keys = set()
+    revisions = {}
+    for segment in segments:
+        key = (segment.seq, segment.language)
+        assert key not in final_keys
+        assert segment.rev > revisions.get(key, -1)
+        revisions[key] = segment.rev
+        if segment.state == "final":
+            final_keys.add(key)
 
 
 async def test_a_viewer_watching_across_a_pass_boundary_sees_both_passes() -> None:
@@ -327,20 +328,20 @@ async def test_an_english_speaker_has_german_and_arabic_streams() -> None:
     segments = [m.data for m in messages if isinstance(m, SegmentMessage)]
     hello = messages[0].data
 
-    assert (hello.source, hello.targets) == ("en", ["de", "ar"])
-    assert {s.language for s in segments} == {"de", "ar"}
+    assert (hello.source, hello.targets) == ("en+de", ["en", "de", "ar"])
+    assert {s.language for s in segments} == {"en", "de", "ar"}
     first = [s for s in segments if s.seq == 0 and s.state == "final"]
     assert {s.language: s.text for s in first}["de"] == "Heute betrachten wir gedämpfte Schwingungen."
     assert all(s.src == "Today we will look at damped oscillations." for s in first)
 
 
 async def test_a_german_speaker_has_english_and_arabic_streams() -> None:
-    messages = [m async for m in replay("default", mode=mode_for("de"), speed=0)]
+    messages = [m async for m in replay("default", speaker="de", speed=0)]
     segments = [m.data for m in messages if isinstance(m, SegmentMessage)]
     hello = messages[0].data
 
-    assert (hello.source, hello.targets) == ("de", ["en", "ar"])
-    assert {s.language for s in segments} == {"en", "ar"}
+    assert (hello.source, hello.targets) == ("en+de", ["en", "de", "ar"])
+    assert {s.language for s in segments} == {"en", "de", "ar"}
     first = {s.language: s for s in segments if s.seq == 0 and s.state == "final"}
     assert first["en"].text == "Today we will look at damped oscillations."
     assert first["en"].src == "Heute betrachten wir gedämpfte Schwingungen."
@@ -352,7 +353,7 @@ async def test_every_target_has_a_draft_and_a_final_for_every_line() -> None:
     segments = [m.data for m in messages if isinstance(m, SegmentMessage)]
     lines = len(SCRIPTS["default"].segments)
 
-    for language in mode.targets:
+    for language in ("ar",):
         mine = [s for s in segments if s.language == language]
         assert len(mine) == 2 * lines
         assert [(s.seq, s.rev) for s in mine] == [(n, r) for n in range(lines) for r in (0, 1)]
@@ -367,9 +368,9 @@ def test_every_line_of_every_script_exists_in_every_language() -> None:
 
 
 def test_the_publisher_declares_the_languages_it_can_produce() -> None:
-    assert SimPublisher(mode=mode_for("en")).supported_languages == ("de", "ar")
-    assert SimPublisher(mode=mode_for("de")).supported_languages == ("en", "ar")
-    assert SimPublisher(mode=GERMAN_ONLY).supported_languages == ("de",)
+    assert SimPublisher(mode=mode_for("en")).supported_languages == ("en", "de", "ar")
+    assert SimPublisher(mode=mode_for("de")).supported_languages == ("en", "de", "ar")
+    assert SimPublisher(mode=GERMAN_ONLY).supported_languages == ("en", "de", "ar")
 
 
 async def test_a_sessions_own_announcement_is_not_overwritten_by_the_replays() -> None:

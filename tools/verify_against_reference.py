@@ -13,16 +13,16 @@ files.
 
 Usage::
 
-    # ASR accuracy, from a session's own English subtitle file
+    # ASR accuracy, from a session's raw source subtitle file
     uv run python tools/verify_against_reference.py \\
         --reference samples/reference.en.txt \\
-        --hypothesis recordings/demo-20260923-101500.en.srt
+        --hypothesis recordings/<stem>.source.srt
 
     # German quality, once a German reference exists
     uv run python tools/verify_against_reference.py \\
         --reference samples/reference.en.txt \\
-        --hypothesis recordings/demo-20260923-101500.en.srt \\
-        --hypothesis-de recordings/demo-20260923-101500.de.srt \\
+        --hypothesis recordings/<stem>.source.srt \\
+        --hypothesis-de recordings/<stem>.de.srt \\
         --reference-de samples/reference.de.txt
 
     # Prove the arithmetic on the real corpus before trusting any number it prints

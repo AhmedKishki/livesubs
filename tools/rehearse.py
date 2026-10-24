@@ -1,14 +1,9 @@
-"""Run a live session with the audio playing alongside it, in sync.
+"""Run a live session with local audio playback after recognition opens.
 
-A rehearsal has three parts that have to happen at once: the pipeline reading its audio in
-real time, the same audio audible to the room, and a phone showing the subtitles. Doing that by
-hand needs a stopwatch, because the two sides start counting from different moments.
-
-They do not have to. ``LivePipeline.run`` warms the translator and opens the recogniser
-*before* it reads the first frame, so the pipeline's audio clock starts when the providers are
-ready rather than when the process starts. Waiting for that moment in the log and starting the
-player then puts the two within a fraction of a second of each other, whatever the machine's
-startup time, and it stays correct on a slow network.
+Connect a viewer before the readiness timeout: recognition stays paused without one.
+Readiness does not depend on translation warm-up, which transcription-only readers never
+need. Waiting for recognition reduces manual startup coordination; it does not guarantee
+sample-accurate alignment between playback and the capture clock.
 
 The output of the server is passed through, so the URLs it prints - and the per-segment latency
 lines - appear here as they happen.
@@ -38,11 +33,10 @@ from pathlib import Path
 
 __all__ = ["default_player", "main", "wait_for_ready"]
 
-#: The line each approach prints once its providers are connected. Waiting for it is what makes
-#: the audio and the subtitles start from the same moment.
+#: Provider-neutral readiness works even when no target needs a translator.
 READY = {
-    "live": re.compile(r"stream open"),
-    "live-text": re.compile(r"provider warm"),
+    "live": re.compile(r"recognition stream open"),
+    "live-text": re.compile(r"recognition stream open"),
 }
 
 #: Players in the order they are tried. `gst-play` handles the WAV and is what the corpus
@@ -166,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--speaker",
         default=None,
-        help="the language the audio is in, en, de or en+de; the configured speaker when omitted",
+        help="recognition setting auto, en or de; the configured setting when omitted",
     )
     parser.add_argument(
         "--player",

@@ -5,12 +5,8 @@
 // module owns the two things the server cannot know: the interface strings, and the
 // rules that turn a URL plus a session into a role.
 //
-// The listener's language is a choice made in the URL, never inferred and never cached.
-// A remembered choice is how an attendee ends up reading a language they only tried once,
-// and the URL is the one thing that a QR code, a bookmark and a manual navigation all
-// agree on. Without `?lang=`, the viewer gets the session's default language, which is
-// what the plain QR code reaches. This module touches neither localStorage nor the
-// overlay's saved display preferences.
+// Resolve explicit links before browser preferences and the operator fallback. Language
+// is never cached in localStorage or mixed with saved display preferences.
 
 //: The strings used when a language has no pack of its own, and the pack a page speaks
 //: before it knows the listener's language.
@@ -136,9 +132,15 @@ export function languageFromSearch(search) {
   return /^[a-z]{2,3}$/.test(code) ? code : null;
 }
 
-/** The language this page will show: the one asked for, else the session's default. */
-export function chooseLanguage(requested, session) {
-  return requested ?? session.default;
+/** Resolve once per page load; callers retain this result across socket reconnects. */
+export function chooseLanguage(requested, session, browser = {}) {
+  if (requested !== null && requested !== undefined) return requested;
+  const preferences = browser.languages?.length ? browser.languages : [browser.language];
+  for (const preference of preferences) {
+    const primary = typeof preference === "string" ? preference.trim().toLowerCase().split("-")[0] : "";
+    if (["en", "de", "ar"].includes(primary) && isOffered(primary, session)) return primary;
+  }
+  return session.default_language ?? session.default;
 }
 
 /** Whether the session can produce `language` at all. */
@@ -149,11 +151,10 @@ export function isOffered(language, session) {
 /**
  * The WebSocket role for `language`.
  *
- * The session's default language is the plain `viewer` role. Every other language is
- * named explicitly, which is the only way a device receives anything but the default.
+ * Every resolved language is explicit, so reconnects cannot follow a changed fallback.
  */
 export function roleFor(language, session) {
-  return language === session.default ? "viewer" : `viewer_${language}`;
+  return `viewer_${language}`;
 }
 
 /** Whether a segment is written in `language`. */
@@ -176,16 +177,11 @@ export function segmentText(segment, language) {
 /**
  * Rewrite a viewer URL to an explicit language choice.
  *
- * The default language strips the parameter, so the default URL stays exactly what the
- * QR code already encodes. Any other language is explicit. Other query parameters and
- * the fragment are preserved.
+ * Manual choices stay explicit, including the fallback. Other parameters and the
+ * fragment are preserved, and duplicate language parameters are canonicalised.
  */
 export function viewerUrlWithLanguage(href, language, defaultLanguage) {
   const url = new URL(href, "http://localhost");
-  if (language === defaultLanguage) {
-    url.searchParams.delete("lang");
-  } else {
-    url.searchParams.set("lang", language);
-  }
+  url.searchParams.set("lang", language);
   return `${url.pathname}${url.search}${url.hash}`;
 }

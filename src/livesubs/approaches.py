@@ -270,7 +270,7 @@ def artefacts(
         recorder = SubtitleRecorder(
             directory=settings.artifacts_dir,
             stem=stem,
-            source_code=mode.source,
+            source_code="en+de",
             target_codes=mode.targets,
         )
 
@@ -328,7 +328,7 @@ def build_asr(settings: Settings) -> AsrProvider:
             f"run `livesubs --set-key {provider.name}`"
         )
 
-    return DeepgramAsr(
+    adapter = DeepgramAsr(
         api_key=key,
         url=settings.provider_option(provider.name, "url") or DEFAULT_URL,
         model=settings.provider_option(provider.name, "model") or "nova-3",
@@ -338,6 +338,8 @@ def build_asr(settings: Settings) -> AsrProvider:
         channels=settings.channels,
         keyterms=_glossary(settings),
     )
+    adapter.validate_config(pipeline_config(settings).asr)
+    return adapter
 
 
 def build_mt(settings: Settings, target_language: str) -> MtProvider:
@@ -376,30 +378,40 @@ def build_mt(settings: Settings, target_language: str) -> MtProvider:
         glossary=_glossary(settings),
         thinking=settings.provider_option(provider.name, "thinking"),
         timeout_s=mt_timeout_s(settings),
-        source_language=settings.source_language,
+        source_language="en+de",
         target_language=target_language,
     )
 
 
 def translators(
-    settings: Settings, *, first_now: bool = True
+    settings: Settings, *, first_now: bool = False
 ) -> dict[str, MtProvider | Callable[[], MtProvider]]:
-    """One translator per target of the session's mode.
+    """Validate MT availability and return lazy factories for every fixed target.
 
-    The default language's translator is built now, so a missing key or adapter fails at
-    startup rather than when the first viewer arrives. The others are factories, called
-    only while someone is reading that language, so a language nobody asks for is never
-    constructed or warmed.
+    ``first_now`` is retained for callers but no longer triggers construction: a target
+    may need transcription only, which must never construct or warm MT.
     """
 
+    validate_mt(settings)
     targets = settings.mode.targets
     built: dict[str, MtProvider | Callable[[], MtProvider]] = {}
-    for index, target in enumerate(targets):
-        if index == 0 and first_now:
-            built[target] = build_mt(settings, target)
-        else:
-            built[target] = lambda language=target: build_mt(settings, language)
+    for target in targets:
+        built[target] = lambda language=target: build_mt(settings, language)
     return built
+
+
+def validate_mt(settings: Settings) -> None:
+    """Validate selection without constructing or warming a translator."""
+    provider = settings.active_provider("mt")
+    if provider is None:
+        raise ValueError("no MT provider is usable; configure a translation provider key")
+    kind = settings.provider_option(provider.name, "adapter")
+    if provider.name != "deepseek" and kind != "openai_compat":
+        raise NotImplementedError(
+            f"provider {provider.name!r} has no translation adapter; "
+            "set options.adapter: openai_compat for a compatible endpoint"
+        )
+    mt_timeout_s(settings)
 
 
 # --- registrations -------------------------------------------------------------
@@ -425,6 +437,7 @@ def _build_sim(settings: Settings, options: ApproachOptions) -> SegmentPublisher
         speed=float(options.get("speed", "1.0")),
         loop=loop,
         mode=settings.mode,
+        speaker=settings.session.speaker,
     )
 
 
@@ -467,9 +480,11 @@ def _build_live_sim(settings: Settings, options: ApproachOptions) -> SegmentPubl
         source=capture,
         asr=StubAsr(),
         translators={target: PassthroughMt() for target in mode.targets},
-        source_language=mode.source,
+        source_language="en+de",
+        speaker=settings.session.speaker,
         config=pipeline_config(settings),
         on_segment=recorder,
+        on_source=recorder.record_source if recorder is not None else None,
     )
 
 
@@ -497,9 +512,11 @@ def _build_live(settings: Settings, options: ApproachOptions) -> SegmentPublishe
         asr=build_asr(settings),
         asr_factory=lambda: build_asr(settings),
         translators=translators(settings),
-        source_language=settings.source_language,
+        source_language="en+de",
+        speaker=settings.session.speaker,
         config=pipeline_config(settings),
         on_segment=recorder,
+        on_source=recorder.record_source if recorder is not None else None,
         require_audience=True,
     )
 
@@ -540,9 +557,11 @@ def _build_live_text(settings: Settings, options: ApproachOptions) -> SegmentPub
         asr=TranscriptAsr(cues),
         asr_factory=lambda: TranscriptAsr(cues),
         translators=translators(settings),
-        source_language=settings.source_language,
+        source_language="en+de",
+        speaker=settings.session.speaker,
         config=pipeline_config(settings),
         on_segment=recorder,
+        on_source=recorder.record_source if recorder is not None else None,
         require_audience=True,
     )
 

@@ -66,9 +66,9 @@ test("a URL asks for a language by its code, and for none by saying nothing", ()
 });
 
 for (const [name, mode, fallback] of MODES) {
-  test(`for ${name}, no request reaches the first target and a plain viewer role`, () => {
+  test(`for ${name}, the fallback uses an explicit pinned viewer role`, () => {
     assert.equal(chooseLanguage(null, mode), fallback);
-    assert.equal(roleFor(chooseLanguage(null, mode), mode), "viewer");
+    assert.equal(roleFor(chooseLanguage(null, mode), mode), `viewer_${fallback}`);
   });
 
   test(`for ${name}, Arabic is the explicit viewer_ar role`, () => {
@@ -77,8 +77,8 @@ for (const [name, mode, fallback] of MODES) {
     assert.equal(isOffered("ar", mode), true);
   });
 
-  test(`for ${name}, asking for the default by name is still the plain viewer role`, () => {
-    assert.equal(roleFor(fallback, mode), "viewer");
+  test(`for ${name}, asking for the fallback by name stays explicit`, () => {
+    assert.equal(roleFor(fallback, mode), `viewer_${fallback}`);
   });
 }
 
@@ -114,15 +114,15 @@ test("every language has the same interface strings, and an unknown one speaks E
   assert.equal(stringsFor(null), stringsFor("en"));
 });
 
-test("the viewer URL keeps the default clean and makes any other language explicit", () => {
+test("manual viewer URLs retain every language choice explicitly", () => {
   assert.equal(
     viewerUrlWithLanguage("http://host/s/abc?lang=ar&x=1#frag", "de", "de"),
-    "/s/abc?x=1#frag",
+    "/s/abc?lang=de&x=1#frag",
   );
   assert.equal(viewerUrlWithLanguage("http://host/s/abc", "ar", "de"), "/s/abc?lang=ar");
   assert.equal(viewerUrlWithLanguage("http://host/s/abc?lang=de", "ar", "de"), "/s/abc?lang=ar");
-  // The default depends on the session, not on the language.
-  assert.equal(viewerUrlWithLanguage("http://host/s/abc?lang=en", "en", "en"), "/s/abc");
+  // Even a choice equal to the fallback remains explicit.
+  assert.equal(viewerUrlWithLanguage("http://host/s/abc?lang=en", "en", "en"), "/s/abc?lang=en");
   assert.equal(viewerUrlWithLanguage("http://host/s/abc", "en", "de"), "/s/abc?lang=en");
   // Idempotent: choosing a language twice never doubles the parameter.
   assert.equal(viewerUrlWithLanguage("http://host/s/abc?lang=ar", "ar", "de"), "/s/abc?lang=ar");
@@ -132,7 +132,7 @@ test("the WebSocket URL carries the role that matches the language", () => {
   globalThis.window = {
     location: { protocol: "http:", host: "host:8000" },
   };
-  for (const [language, role] of [["de", "viewer"], ["ar", "viewer_ar"]]) {
+  for (const [language, role] of [["de", "viewer_de"], ["ar", "viewer_ar"]]) {
     assert.equal(
       new ViewerClient({ sessionId: "sess", role: roleFor(language, ENGLISH_SPEAKER), overlay: {} }).url,
       `ws://host:8000/ws/sess?role=${role}`,
@@ -140,11 +140,25 @@ test("the WebSocket URL carries the role that matches the language", () => {
   }
   assert.equal(
     new ViewerClient({ sessionId: "sess", role: roleFor("en", GERMAN_SPEAKER), overlay: {} }).url,
-    "ws://host:8000/ws/sess?role=viewer",
+    "ws://host:8000/ws/sess?role=viewer_en",
   );
 });
 
 // --- segment acceptance and text selection ----------------------------------
+
+test("ordered browser primary languages precede fallback but not explicit links", () => {
+  const mode = session("en+de", "en", "de", "ar");
+  assert.equal(chooseLanguage(null, mode, { languages: ["fr-FR", "de-CH", "ar-EG"] }), "de");
+  assert.equal(chooseLanguage(null, mode, { languages: ["ar-EG", "de"] }), "ar");
+  assert.equal(chooseLanguage("en", mode, { languages: ["ar"] }), "en");
+  assert.equal(chooseLanguage("fr", mode, { languages: ["ar"] }), "fr");
+  assert.equal(chooseLanguage(null, mode, { languages: [], language: "de-AT" }), "de");
+  assert.equal(chooseLanguage(null, mode, { language: "ar-EG" }), "ar");
+  assert.equal(chooseLanguage(null, mode, { languages: ["fr"], language: "ar" }), "en");
+  assert.equal(languageFromSearch("?lang=%20DE%20&lang=ar"), "de");
+  assert.equal(languageFromSearch("?lang=de-CH"), null);
+  assert.equal(viewerUrlWithLanguage("http://host/s/a?lang=de&lang=ar&x=1#f", "en"), "/s/a?lang=en&x=1#f");
+});
 
 test("a segment belongs to the one language it is written in", () => {
   assert.equal(acceptsSegment({ language: "de", text: "Hallo" }, "de"), true);

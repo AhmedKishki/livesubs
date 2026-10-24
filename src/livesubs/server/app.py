@@ -74,6 +74,7 @@ def create_app(
             name=session_name or settings.session_name,
             publisher=publisher,
             mode=settings.mode,
+            default_language=settings.session.default_language,
             on_failure=on_failure,
         )
     )

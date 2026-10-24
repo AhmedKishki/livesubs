@@ -1,8 +1,6 @@
 <!doctype html>
-<!-- The QR target. The page sets its own language and direction once it knows the
-     session: the default language of the session for a plain scan, or the one named by
-     `?lang=<code>` (docs/07-delivery-qr.md). The speaker's own words are stripped on the
-     server before they reach this device, and so is every language but the one chosen. -->
+<!-- The QR target resolves its language once, then requests only that language.
+     The server strips raw source fields, word timings and other target languages. -->
 <html lang="en">
   <head>
     <meta charset="utf-8" />

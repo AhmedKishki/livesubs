@@ -8,7 +8,18 @@ from livesubs.asr.base import AsrConfig
 from livesubs.ingest import IngestConfig
 from livesubs.segmenter import SegmenterConfig
 
-__all__ = ["Committed", "PipelineConfig"]
+__all__ = ["Committed", "PipelineConfig", "SourceSegment"]
+
+
+@dataclass(frozen=True, slots=True)
+class SourceSegment:
+    """A final source segment awaiting ordered target output."""
+
+    seq: int
+    text: str
+    start_ms: int
+    end_ms: int
+    language: str = "unknown"
 
 
 @dataclass(frozen=True, slots=True)
