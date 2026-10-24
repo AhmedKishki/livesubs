@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-Approved for implementation on 2026-10-24. The requirements below are not yet implemented. Approval covers the implementation plan, TDD, verification, commits and pushes; a paid rehearsal still requires separate authorisation.
+Approved on 2026-10-24. This is the design record for the implemented multilingual behaviour; the operational contracts remain in their owners in the [document map](index.md). Approval covered the implementation plan, TDD, verification, commits and pushes. A paid rehearsal still requires separate authorisation.
 
 The supported scenario is a meeting, conversation or event in which people take turns speaking English and German into one shared microphone. Every session offers English, German and Arabic subtitles, independently of the recognition setting. A lecture uses the same pipeline and controls as a conversation.
 

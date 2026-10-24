@@ -12,9 +12,7 @@
 
 ## Failure handling
 
-- Reconnect ASR with backoff when the socket drops.
-- Switch to the next configured adapter when `healthy` reports failure.
-- Add an explicit MT outage fallback that emits no text rather than substituting the speaker's language.
+- Add explicitly configured runtime provider failover with visible status; do not silently replace the requested recogniser.
 - Monitor `AudioSource.alive` and stalled reads so a dead microphone changes the session status instead of leaving it `live`.
 
 ## Quality
@@ -33,7 +31,7 @@
 - Measure recognition, translation quality and cost for a German speaker and for Arabic subtitles. Only English-to-German has corpus measurements.
 - Have a reader of Arabic review the Arabic prompt, the simulated Arabic lines and the Arabic viewer strings. No such review is recorded.
 - Measure a recorded English/German conversation with several speakers on one microphone, short replies and overlapping speech. Only spliced audiobook clips have been measured, as recorded in [09-evaluation](09-evaluation.md). Translation accuracy in a conversation has not been scored.
-- Compare passing same-language speech through untranslated with translating every segment. In a `multi` stream Deepgram labels each word's language, and the adapter discards the labels. Passthrough would send a transcript to the viewers of its language, so it needs the AGENTS.md rule on source text changed.
+- Measure automatic word-language routing and transcription-only delivery on real conversation audio, including incorrect or missing provider labels and manual handover gaps. The earlier all-MT conversation run is not a measurement of this path.
 - Compare Deepgram's `flux-general-multi` with Nova-3 `multi` for conversations. Flux detects the end of a turn itself, but it uses a different endpoint and event format, so it needs its own adapter.
 
 ## Deployment
@@ -52,6 +50,8 @@
 | DeepL text MT | No token streaming. Per-character billing also needs evaluation if speculative retranslations are added. |
 | DeepL Voice realtime | one call for recognition and translation, EU-hosted. A separate product from the text-MT decision |
 | Multi-microphone beamforming | independent microphones cannot provide synchronised channels |
+| Spoken Arabic | Nova-3 documents support, but product approval and native-audio validation are still needed. |
+| Privacy mode | Requires explicit endpoint, vendor and retention decisions; no new privacy mode is implied by multilingual support. |
 | A local ASR adapter | No local recogniser was selected for the reference machine without a GPU. Local MT can already use `adapter: openai_compat` and `requires_key: false`. |
 | Projector overlay | A browser cannot draw over another application. OBS can instead use the viewer page as a browser source. |
 | Diarization, audience Q&A, speech synthesis | need a second audio source and per-speaker handling |

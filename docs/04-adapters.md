@@ -8,6 +8,7 @@ class WordTiming(BaseModel):
     start_ms: int
     end_ms: int
     confidence: float | None = None
+    language: str | None = None
 
 @dataclass(slots=True)
 class AsrEvent:
@@ -18,6 +19,7 @@ class AsrEvent:
     confidence: float | None = None
     words: list[WordTiming] | None = None
     speech_final: bool = False
+    language: str | None = None
 
 class AsrProvider(Protocol):
     async def open(self, cfg: AsrConfig) -> None: ...
@@ -29,8 +31,9 @@ class AsrProvider(Protocol):
 ```
 
 - `push` takes raw 16 kHz mono s16le PCM. Adapters handle their own framing and transport.
-- `AsrConfig.language` is the speaker's language, or a conversation's languages joined by `+`, such as `en+de`. An adapter that cannot recognise a conversation in one stream refuses it in `open`, before any audio is sent.
+- `AsrConfig.language` is `en+de` for Automatic, or `en`/`de` for a manual pin. The user-facing `auto` setting is not a language-registry code. An unavailable configuration is rejected before audio is sent; Deepgram also exposes pure `validate_config()` for startup validation without a connection.
 - `words` may be `None`. Deepgram supplies word timings. OpenAI's live transcription models do not, and must not be assumed to.
+- A word's optional `language` is provider-neutral evidence. Normalise regional tags inside the adapter without erasing unsupported labels. `AsrEvent.language` guarantees the entire event is homogeneous; a dominant alternative language or language list is insufficient. [Segmentation](03-segmentation.md) owns commitment classification and manual inheritance.
 - Only Deepgram has a built ASR adapter. OpenAI is registered as planned: it can hold a key and satisfies nothing, so a key for it alone does not pass `--check`.
 - `partial` events replace each other for the current span. `final` settles the span: its text will not change, and the next event starts a new span instead of repeating it. A chunked provider such as Deepgram settles several spans inside one utterance.
 - `speech_final` is the provider's own endpointing signal, independent of `kind`. The segmenter treats it as a hint, never as a requirement.
@@ -58,19 +61,17 @@ class MtProvider(Protocol):
     def healthy(self) -> bool: ...
 ```
 
-- A translator is built for one target language. The pipeline builds it, calls `warm()` and starts its worker only when that language has viewer demand, before that target's first translation. Shared recognition does not wait for an unrelated target to warm. Cache warm-up is best-effort, not a latency guarantee.
+- Each target has an ordered output worker on demand. It builds and calls `warm()` on a translator lazily inside the first MT-required item's deadline. Matching transcription does not build, warm or call MT. Cache warm-up is best-effort, not a latency guarantee.
 - `translate` yields text deltas. The publisher accumulates them into draft revisions, then publishes a final translation. Drafts are spaced at least 120 ms apart after the first words, which go out at once.
 - `translate` raises `MtError` when the request fails, including after some deltas. It never ends normally on a partial translation, because only the pipeline knows what a viewer has already been shown.
 - Any OpenAI-compatible endpoint is accepted for MT when the provider declares `options.adapter: openai_compat`. Without that declaration the provider is refused rather than guessed at.
-- The OpenAI-compatible adapter builds its prompt from the speaker's language and the target language. The language names come from [languages.py](../src/livesubs/languages.py), and the German target keeps the exact prompt text recorded in `tests/fixtures/prompts_v1.json`, so its provider cache prefix does not change.
-- A conversation has its own prompt for each target. It accepts English, German or a mixture, and keeps speech that is already in the target language. Its requests ask for subtitles in the target, not a translation.
+- Application translators use a stable English/German subtitle-rendering prompt per target, independent of the recognition pin. It accepts homogeneous, mixed or uncertain text, preserving target-language portions as needed. Conservative same-target requests are valid. Language names come from the registry; the legacy single-source German prompt fixture remains covered separately.
 
-## Session modes
+## Session languages
 
-- The speaker language selects the mode. An English speaker has the targets `de` and `ar`, a German speaker has the targets `en` and `ar`, and an English/German conversation, `en+de`, has the targets `en`, `de` and `ar`. The first target is the default.
-- `session.targets` can narrow a mode to some of its targets, in order. A target outside the mode is rejected at startup.
-- A publisher declares the languages it can produce with `supported_languages`. The session offers the mode's targets that the publisher can produce. A publisher that declares nothing is offered the default target only.
-- The live pipeline takes one translator per target as a mapping from language code to provider or provider factory. A factory is called only when that language first has viewer demand.
+- Every session offers `en`, `de`, `ar`. Speaker settings affect recognition, not target availability or the fallback language.
+- A publisher must declare all three in `supported_languages`; missing capability is rejected rather than silently narrowing the offer. Deprecated full-set configuration and rejected narrowing are described in [configuration](12-configuration.md).
+- The pipeline accepts target providers or factories. A factory is called only for a demanded MT-required item. Successful transcription uses the same context and sink path without counting as MT success or clearing an MT outage.
 
 ## Wire contract
 
@@ -96,7 +97,7 @@ class MtProvider(Protocol):
 
 | `type` | Purpose |
 | --- | --- |
-| `hello` | session metadata on connect: version, session id and name, the speaker's `source` language, the offered `targets`, and this connection's own `language` |
+| `hello` | Session metadata: version, id/name, stable `source` capability `en+de`, offered `targets`, and this connection's concrete `language`. Recognition intent/state is exposed separately through session controls. |
 | `segment` | a subtitle line, new or revised |
 | `status` | pipeline health: `live`, `delayed` or `stopped`, for everyone or for one `language` |
 | `error` | a stage diagnostic shown to the operator |
@@ -107,7 +108,7 @@ class MtProvider(Protocol):
 - A newer `seq` is offered to display pacing, which can replace or drop it. A newer `rev` on the same `seq` updates the line in place.
 - `state` is `draft` or `final`. `final` means no further revisions for that `(language, seq)`, so the overlay may start its hold timer.
 - Every segment names its `language` and carries its words in `text`. No field is specific to one language, so a new language changes no message. Mailbox ordering, snapshots and encoding caches distinguish languages.
-- A viewer receives one language. The plain `viewer` role receives the mode's first target, and `viewer_<code>` receives that target if the session offers it. The server removes the speaker's source text, source word timings and every other language from both. Operators retain source text and receive every language.
+- A viewer receives one concrete output language. Pages always use `viewer_<code>`. The legacy plain `viewer` role resolves the current fallback at connection time; a later fallback change does not mutate that subscription. The server strips raw `src`, word timings and other targets. Eligible transcription is allowed in the viewer's own `text`. Operators retain raw source access and every target.
 - A status with a `language` concerns that language's readers only, so a translator that is down is shown to its own viewers. A client with several scopes shows the worst. Status without a `language` concerns everyone.
 - The `hello` to a viewer carries the connection's `language`, which a page compares with what it asked for.
 - The role is a content filter for a trusted network, not access control. Anyone who can reach the server can request `admin`.
@@ -127,3 +128,4 @@ class MtProvider(Protocol):
 | translator slower than the speaker | Past `max_backlog` queued segments (6) the oldest are discarded. At `lag_queue_limit` (3) the status is `delayed`. |
 | provider cannot be built | a missing key or missing adapter raises at startup. There is no automatic stub fallback from `live` |
 | initial ASR auth failure | Raises during the connection attempt. No transcription is produced. |
+| MT unavailable but a later source matches its target | The ordered worker can publish eligible transcription. That success does not declare MT recovered. |

@@ -88,19 +88,21 @@ MIN_VISIBLE_MS = 800                                   // when it may be REPLACE
 
 ## Viewer controls
 
-- The control panel hides automatically. Its toggle accepts pointer events.
+- The Aa display-settings panel hides automatically. The language buttons stay visible outside that panel.
 
 | Control | Values | Persisted |
 | --- | --- | --- |
 | font size | 5 steps | yes |
 | position | bottom / top | yes |
 | backdrop | box / shadow / outline | yes |
-| language | any language the session offers | URL, not local storage |
+| language buttons | English / Deutsch / العربية | Manual choice in the URL, never local storage. |
 | fullscreen | button | no |
 
-- Defaults are the session's first target language with the box backdrop: German for an English speaker, English for a German speaker or a conversation.
-- Another language uses `?lang=<code>`, for example `?lang=ar`. The page reads the offered languages, their names and their direction from `/api/session`, and builds the picker from them. The picker is absent when the session offers one language.
-- The overlay renders segments of its own language only and ignores the rest before applying pacing. A page whose `hello` names a different language than the page asked for reloads once, because the server restarted in another mode.
+- Resolve language once per page load: a supported explicit `?lang=<code>` wins, then the first supported primary language in ordered `navigator.languages`, then the operator's fallback. Regional preferences such as `de-CH` and `ar-EG` match German and Arabic. Use `navigator.language` only when the preference list is absent or empty. The display backdrop defaults to box independently of language.
+- The first query parameter is used, trimmed and lowercased. A missing, empty or malformed value requests automatic selection. A syntactically valid unsupported code displays unavailable and opens no socket.
+- A manual button always writes its explicit code, even when it equals the fallback, while preserving other query parameters and the fragment. Navigation uses existing socket cleanup. The buttons have accessible active-state feedback and support keyboard activation.
+- Every page opens an explicit `viewer_<code>` role and retains that resolved code across reconnects. A fallback change affects later automatic page loads, not an existing page. A fresh load of a plain URL resolves preferences again; no language is cached in cookies or local storage.
+- The overlay renders only its own language before applying pacing. A mismatched `hello.language` triggers the existing one-time reload rather than rendering another language.
 - A language the session does not offer shows an "unavailable" notice in that language and opens no socket. The picker stays available.
 - Interface strings come from a pack per language in [language.js](../web/static/language.js). A language without a pack uses English strings and takes its name and direction from the session.
 
@@ -132,5 +134,5 @@ MIN_VISIBLE_MS = 800                                   // when it may be REPLACE
 ## Unsupported features
 
 - Source word timings do not provide target-language word alignment. Word-by-word karaoke is not implemented.
-- The viewer has no speaker labels and assumes a single presenter.
+- The viewer has no speaker labels. People may take turns on the shared microphone, but overlapping speech is not separated.
 - The viewer has no scrolling transcript. Final-line history is available in the operator page.

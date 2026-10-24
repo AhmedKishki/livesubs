@@ -1,8 +1,8 @@
 # Live translated subtitles
 
-`livesubs` turns source-language speech into target-language subtitles displayed on attendees' phones. It supports **English speech → German or Arabic subtitles** and **German speech → English or Arabic subtitles**.
+`livesubs` puts English, German and Arabic subtitles on attendees' phones during meetings, conversations and events. It recognises English/German speaker changes automatically on one shared microphone. Each attendee reads one language throughout the conversation.
 
-PipeWire captures the microphone on a Linux machine. Deepgram transcribes the speech, DeepSeek translates the text, and the web server sends the subtitles to phone browsers.
+PipeWire captures the microphone on a Linux machine. Deepgram transcribes the speech, DeepSeek translates it where needed, and the web server sends subtitles to phone browsers. Readers of a wholly same-language segment receive its transcription without a translation request.
 
 ## Installation
 
@@ -38,12 +38,13 @@ Open a new terminal and run this from any directory:
 livesubs
 ```
 
-1. Choose your microphone with the arrow keys and press Enter.
-2. Enter your [Deepgram](https://console.deepgram.com/) and [DeepSeek](https://platform.deepseek.com/api_keys) API keys when prompted. They are saved for later sessions.
-3. Speak into the microphone while startup checks the signal.
-4. Open the printed landing-page URL and display its QR code.
-5. Attendees join the same network and scan the code. The default subtitle language is German for an English speaker and English for a German speaker or a conversation. Attendees choose another language, such as **العربية** for Arabic, in the viewer's **Aa** settings.
+1. Choose Automatic recognition, or pin English or German, and select the fallback subtitle language.
+2. Choose your microphone with the arrow keys and press Enter.
+3. Enter your [Deepgram](https://console.deepgram.com/) and [DeepSeek](https://platform.deepseek.com/api_keys) API keys when prompted. They are saved for later sessions.
+4. Speak into the microphone while startup checks the signal.
+5. Open the printed landing-page URL and display its QR code.
+6. Attendees join the same trusted network and scan the code. Their phone's supported language is selected automatically, otherwise the operator's fallback is used. English, Deutsch and العربية buttons change the language with one tap.
 
-The session assumes an English speaker. For a German speaker, start it with `livesubs --speaker de`. For a conversation that switches between English and German, start it with `livesubs --speaker en+de`.
+Open `/admin` on the server's address to change recognition or the fallback during the session. Leave recognition on Automatic when English and German speakers take turns. A manual change briefly reopens recognition and can miss speech, so make it during a pause. Live choices last for the current run only.
 
-Transcription is shared between languages. Each translation runs only while someone requests that language, and all paid processing pauses when the last viewer disconnects. Keep the terminal running during the session. Press Ctrl-C to stop.
+Recognition is shared between languages. Translation runs only for languages with readers, and all paid processing pauses when the last viewer disconnects. Keep the unauthenticated service on a trusted LAN and the terminal running during the session. Press Ctrl-C to stop.

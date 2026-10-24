@@ -38,7 +38,7 @@ uv run livesubs --serve --approach live-sim --audio file:samples/sample-16k-mono
 ```bash
 uv run python tools/verify_against_reference.py \
   --reference samples/reference.en.txt \
-  --hypothesis recordings/sample.en.srt \
+  --hypothesis recordings/sample.source.srt \
   --hypothesis-de recordings/sample.de.srt \
   --reference-de samples/reference.de.txt
 ```
@@ -46,7 +46,7 @@ uv run python tools/verify_against_reference.py \
 ### Align the transcript and translate it live
 
 - Generate cue spans with `live-sim`, stop its server with Ctrl-C after playback, then align the reference and run `live-text`.
-- Replace `recordings/sample.en.srt` with the generated English sidecar. The application includes the session and timestamp in its real filename.
+- Replace `recordings/sample.source.srt` with the generated raw-source sidecar. The application includes the session and timestamp in its real filename. An English reader sidecar may contain translated text and is not the raw recognition reference.
 - The alignment tool distributes reference words in proportion to cue durations. It does not recognise words or verify utterance boundaries.
 
 ```bash
@@ -56,7 +56,7 @@ uv run livesubs --serve --approach live-sim --audio file:samples/sample-16k-mono
 # 2. Lay the transcript onto those spans.
 uv run python tools/align_reference.py \
   --reference samples/reference.en.txt \
-  --timing recordings/sample.en.srt \
+  --timing recordings/sample.source.srt \
   --out samples/reference.en.timed.srt
 
 # 3. Translate the timed transcript live, against the audio.

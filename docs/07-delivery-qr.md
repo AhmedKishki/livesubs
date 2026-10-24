@@ -5,16 +5,18 @@
 | Path | Audience | Purpose |
 | --- | --- | --- |
 | `/` | attendees | landing page with the QR code, join instructions and session name |
-| `/s/{session_id}` | attendees | the subtitle page in the session's default language, and the QR target |
+| `/s/{session_id}` | attendees | The QR target; its page resolves browser language and the operator's fallback. |
 | `/s/{session_id}?lang=ar` | attendees requesting another language | the subtitle page in that language, here Arabic |
 | `/admin` | operator | the speaker's words and every target language, final-line history, status, connection count and local render duration |
 | `/api/stats` | operator page | counts and timings for the console, polled once a second |
+| `POST /api/session/{session_id}/settings` | operator controls | Atomically records speaker intent and/or the fallback for the current run. |
 | `/ws/{session_id}` | viewer and operator pages | WebSocket for `segment`, `status`, `hello` and `error` messages |
 | `/qr.png` | landing page | rendered QR for the current session |
 
 - The QR encodes the resolved viewer URL, for example `http://192.168.1.42:8000/s/7f3a`.
 - The default server uses plain HTTP. The viewer needs no microphone permission because capture happens server-side.
-- The default WebSocket role is `viewer`, which receives the session's first target language. Another language uses `viewer_<code>`, for example `viewer_ar`. No viewer role receives the speaker's own words or another language. A session that cannot produce the requested language accepts the handshake and then closes with code `4403`, and an unknown session closes with `4404`. The handshake is accepted first because a close sent before it reaches browsers as code 1006, which the viewer treats as a network drop and retries.
+- Every viewer page uses a concrete role such as `viewer_en` or `viewer_ar`. The legacy default role `viewer` resolves the current fallback when the connection starts; clients needing reconnect pinning must use an explicit role. No viewer receives raw-source fields, word timings or another target. A same-language transcription can be its own subtitle text.
+- An unsupported requested language accepts the handshake and closes with code `4403`; an unknown session closes with `4404`. Accepting first prevents browsers reporting a generic code 1006 and retrying a permanent language/session error.
 - The viewer page asks `/api/session` for the offered languages and does not open a socket for one the session does not offer. The server refusal covers a page built from a stale description.
 - Roles are a content filter, not access control. The service is unauthenticated, so any device on the network can request `admin` or another language. Keep it on a trusted LAN.
 
@@ -85,15 +87,26 @@
 - The snapshot then sends the current `status`, followed by the current segment when one exists.
 - A join before the first segment has no text to display yet.
 - After a disconnect, the viewer retries with backoff and receives another snapshot when the connection succeeds.
+- Page subscriptions retain their selected language across reconnects, including after a live fallback change. A new connection using the legacy plain role resolves the fallback again.
 - Idle sockets receive a heartbeat every 10 seconds. Clients reply with `pong`; a client silent for 30 seconds is disconnected and no longer counts toward provider demand.
 
 ## Operator console
 
-- `/admin` is always in English, whatever the session's languages. It shows the speaker's recognised words and one line per target language for comparison. A history row collects the translations of one segment as they arrive.
+- `/admin` is always in English. It shows raw recognition and all target outputs for comparison, including final transcriptions. A history row collects one segment's outputs as they arrive.
+- The primary speaker control offers Automatic, English and German. The fallback control offers all three subtitle languages. Both change the current run only, not saved configuration.
+- Recognition status separates requested from active setting and shows paused, applying, active, retrying or failed. The last committed detection is reported separately as English, German, mixed or unknown. A click is not proof a new recognition stream has opened.
+- A manual change reopens recognition without restarting the session or disconnecting readers. The handover has a bounded best-effort flush and can miss speech; change during a pause. Capture/archive and committed target work continue. Failures remain visible without silently reverting to Automatic.
 - It shows the segment history of committed lines and the last few pipeline errors.
 - Operator connections do not count as viewers or keep paid processing active.
 - `/api/session` and `/healthz` report `viewers` separately from total `connections`.
 - The landing page does not link to `/admin`. The operator role still has no authentication.
+
+### Settings requests
+
+- Send a nonempty JSON object containing `speaker` (`auto`, `en`, `de`), `default_language` (`en`, `de`, `ar`), or both. Unknown fields, invalid values or invalid JSON fail validation before either setting changes.
+- HTTP 200 returns `session_id`, control `revision`, desired `speaker`, `default_language` and `recognition` state. Repeating current desired settings is a no-op; fallback-only changes do not reopen recognition. The latest accepted speaker intent supersedes older in-flight changes.
+- Unknown sessions return 404, non-JSON content types 415, invalid requests 422 and foreign or `null` browser Origins 403. Missing Origin is accepted for trusted-LAN non-browser clients; a supplied Origin must match normalised scheme, host and port. No permissive CORS is enabled.
+- These checks are not authentication. Anyone with trusted-LAN access can still operate the service. `/api/session` and `/api/stats.session` expose current control state without lecture text.
 
 ### Figures
 

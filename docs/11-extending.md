@@ -77,7 +77,7 @@ async def run(self, hub: Hub, *, session_id: str, stop: asyncio.Event) -> None: 
 ```
 
 - `live-sim` shares the `pipeline` package with `live`. A new builder can reuse that pipeline with different adapters rather than reimplementing delivery.
-- A publisher that serves more than one target language declares them with a `supported_languages` property. The session offers the mode's targets that the publisher can produce.
+- Every session publisher declares `en`, `de`, `ar` in `supported_languages`. A missing capability is rejected rather than silently narrowing the session. To support console changes, implement `set_speaker(value)` and `speaker_snapshot()` using the runtime control contract.
 
 ## Capture backends
 
@@ -101,14 +101,14 @@ def alive(self) -> bool: ...
 - Consume `hello`, `segment`, `status` and `error` messages from the existing WebSocket.
 - Handle snapshots and reconnects, and pass publishing through the hub's ordering guard rather than writing competing revisions directly.
 
-## Languages and modes
+## Languages and recognition settings
 
 - A language is an entry in `LANGUAGES` in `src/livesubs/languages.py`: its code, English name, native name, prompt wording and direction. The code is the one used on the wire, in the `viewer_<code>` role, in `?lang=` and in provider requests.
-- A mode is an entry in `MODES` in the same file: the speaker's language, or a conversation's languages joined by `+`, and the ordered targets. The first target is the default viewer's.
+- Current recognition settings are Automatic, English and German. All offer the fixed target set; the viewer fallback is a separate setting. A new spoken or target language requires a deliberate product, provider and routing change, not merely adding another mode.
 - Add a string pack for the language in `web/static/language.js`. Without one the viewer uses English strings and takes the language's name and direction from the session.
-- The ASR provider must support the speaker's language. For a conversation it must recognise all of the conversation's languages in one stream. The MT adapter builds its prompt from the names of the speaker's language and the target, so a new language needs no prompt edit.
+- The ASR provider must support the requested recognition configuration and retain neutral language evidence, including explicit unsupported labels. A new automatic source language needs commitment-classification and passthrough tests; provider documentation alone must not expand supported speech.
 - Add lines for the language to the simulated lecture in `src/livesubs/sim.py`, so `--approach sim` and `tools/check_overlay_layout.py --language CODE` cover it.
-- `tests/test_languages.py` and the tests parametrised over `support.MODES` pick up a new mode. Extend `MODES` in `tests/support.py` to cover it.
+- Extend registry, ordering, audience-gating and filtering tests when supported languages change. Cover automatic pure/mixed/unknown evidence as well as manual pins, rather than assuming a registry entry proves the routing. Check a new writing system in a real browser.
 
 ## Bilingual viewer extension
 

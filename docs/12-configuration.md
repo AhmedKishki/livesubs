@@ -31,7 +31,7 @@
 | Flag | Applies to |
 | --- | --- |
 | `--host`, `--port`, `--session-id`, `--session-name` | Startup or `--serve`. |
-| `--speaker en\|de\|en+de` | Startup, `--serve`, `--check` or `--preflight`. The language the presenter speaks. It selects the mode and overrides `session.speaker`. |
+| `--speaker auto\|en\|de` | Startup, `--serve`, `--check` or `--preflight`. Overrides recognition intent; an explicit flag skips the startup speaker picker. Deprecated `en+de` means `auto`. |
 | `--exit-on-failure` | Startup or `--serve`. Exit with status 1 if the pipeline dies, so a supervisor restarts the process. |
 | `--script`, `--speed`, `--once` | the `sim` approach |
 | `--audio` | A `pw:TARGET` preference for startup, or a direct input with `--serve`. |
@@ -87,13 +87,13 @@ uv run livesubs --config /srv/sub/livesubs.yaml --check
 - Empty environment values count as unset. An exported nonempty value wins over saved values.
 - `server.port` and `LIVESUBS_PORT` address the same setting.
 
-## Session mode
+## Recognition and fallback
 
-- `session.speaker`, or `LIVESUBS_SESSION_SPEAKER`, is the language the presenter speaks: `en` (the default), `de`, or `en+de` for a conversation that switches between them. `--speaker` overrides it for one run.
-- An English speaker is offered German and Arabic. A German speaker is offered English and Arabic. A conversation is offered English, German and Arabic. The first is the default viewer's language.
-- `session.targets` narrows the offered languages and sets their order. For example `targets: [de]` offers German only. A language outside the mode is rejected by `--check`.
-- A `--speaker` that differs from the configured speaker drops `session.targets` from the file, because those were chosen for the other speaker.
-- The recogniser is opened for the speaker's language, or for every language of a conversation, and each translator is built for one target of the mode.
+- `session.speaker`, or `LIVESUBS_SESSION_SPEAKER`, is `auto` by default, `en` for an English pin, or `de` for a German pin. `--speaker` overrides it for one run. Deprecated `en+de` is normalised to `auto` with a migration warning; an explicit existing English setting remains English.
+- Every setting offers English, German and Arabic subtitles in canonical order. The operator's fallback is `session.default_language`, or `LIVESUBS_SESSION_DEFAULT_LANGUAGE`, with values `en`, `de`, `ar` and built-in default `en`. It does not depend on target order.
+- Remove `session.targets` from old deployments. A deprecated complete `en/de/ar` declaration is accepted and normalised; subsets, duplicates and unsupported codes fail validation instead of narrowing the offer. A speaker override does not hide an invalid target declaration.
+- Interactive startup preselects resolved recognition/fallback values and lets the operator change them before microphone setup. No terminal means no picker; `--serve` skips interactive setup. `/admin` can change the current run without rewriting configuration, as described in [QR delivery](07-delivery-qr.md).
+- Automatic opens Nova-3 `multi`; manual selection opens its single-language configuration. All translators use stable English/German subtitle-rendering prompts. Demand and committed source evidence decide whether any given item needs MT.
 
 ## Groups
 
@@ -119,10 +119,11 @@ Settings(port=9000)                 # silently ignored
 providers:
   deepgram:
     options:
-      model: nova-2
+      model: nova-3
 ```
 
 - Options resolve from `LIVESUBS_PROVIDER_<NAME>_<KEY>`, then the configuration, then the registry default.
+- Automatic requires compatible Nova-3 configuration; model/language overrides are optional and must match the selected setting. Application construction validates recognition configuration without connecting, rejecting contradictory overrides rather than silently defeating the choice.
 - A new provider requires an explicit `role`:
 
 ```yaml

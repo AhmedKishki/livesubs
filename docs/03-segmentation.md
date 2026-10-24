@@ -53,7 +53,7 @@
 
 ## Context carry
 
-- Each MT request includes up to `context_segments` previous source segments and translations for that target language. Each target language keeps its own context.
+- Each MT request includes up to `context_segments` previous successful source/subtitle pairs for that target. Transcription output enters the same bounded history as translated output; failed or shed items do not.
 - Previous context can help with references and terminology, but it cannot supply words that the speaker has not said yet.
 - Rolling context travels in the user message. The system prompt stays fixed during a session.
 
@@ -62,7 +62,7 @@
 - A streaming recogniser describes speech in spans. While a span is open each event replaces the last hypothesis. When the span settles its text is complete, and the next event starts a new span that does not repeat it.
 - Deepgram settles a chunk every few seconds, several times inside one utterance. An interim result is cumulative from the start of its chunk and knows nothing about the pipeline's cuts.
 - The assembler (`src/livesubs/transcript.py`) keeps the settled text, the open hypothesis and how far the text has been sent. A segment gets only what has not been sent.
-- How far text has been sent is measured on the recogniser's own stream clock from word timings, by the middle of each word, so a hypothesis that revises or re-times earlier words cannot make them repeat. A recogniser without timings is handled by counting the words of the open span.
+- How far text has been sent is measured on the recogniser's stream clock by each word's midpoint. This filters already-sent words, subject to the retimed-word defect recorded in the roadmap. A recogniser without timings is handled by counting the words of the open span.
 - Words recognised after a cut belong to the next segment. A chunk that settles between two cuts is kept until it is sent.
 - Without the assembler, a cut through a chunk was followed by an interim that began with the words already sent, and a chunk that settled between two cuts was overwritten by the next one. Real recordings showed both.
 
@@ -70,7 +70,25 @@
 
 - A run opens when the energy VAD hears speech or the recogniser produces text. A voice below the VAD threshold is still recognised.
 - New recognised text counts as speech when deciding that the speaker has paused. The last words before a pause are recognised a moment after it, and closing at the VAD's pause would leave them to the next segment as a fragment.
+- Language-only hypothesis corrections update token evidence without counting as new speech. Cuts, settled spans and hypothesis replacement retain each surviving token's evidence.
 - A cue still ends at the last frame the VAD called voiced. Only when the VAD heard nothing in a run does the recogniser's last result end the cue.
+
+### Committed source language
+
+- `commit_source(pin=None)` consumes unsent tokens once and returns text plus `en`, `de`, `mixed` or `unknown`. The legacy `commit()` returns only that same consumed text. Empty commitments produce no source segment.
+- Automatic classification examines only retained tokens, not the dominant language of a larger provider response. Apply the first matching rule below.
+
+| Evidence | Classification |
+| --- | --- |
+| Any explicit unsupported language label occurs. | `unknown`, even if English and German also occur. |
+| Every textual token is labelled English. | `en`. |
+| Every textual token is labelled German. | `de`. |
+| English and German both occur, possibly with unresolved tokens. | `mixed`. |
+| Any other evidence, including missing labels. | `unknown`. |
+
+- Untimed automatic text needs an adapter guarantee that the entire event is homogeneous; otherwise it stays unknown. Do not fill gaps from majority voting, the previous segment, script or recognition confidence.
+- A manual pin is an operator assertion. Missing token labels, including text-only events, inherit the pin. Any explicit contradictory label makes the commitment unknown. Return to Automatic when speakers resume switching languages.
+- Matching English/German readers receive a final transcription; every other demanded output takes the translation path. All paths stay in each target's ordered queue, so a transcription cannot overtake a previous translation. Classification is frozen at commitment and never revises a final subtitle.
 
 ## Interaction with ASR endpointing
 

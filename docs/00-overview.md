@@ -2,7 +2,7 @@
 
 ## What this is
 
-- A server captures one presenter's speech and publishes subtitles in the listener's language to attendees' phones.
+- A server captures English/German speech from one shared microphone and publishes subtitles in each attendee's language.
 - Attendees open the viewer page by scanning a QR code on the shared network.
 - Capture runs on the server. The viewer page asks for no microphone permission, so it works over plain HTTP.
 
@@ -20,14 +20,14 @@
 - API-based processing needs no local GPU. A local OpenAI-compatible translator can also be configured, with performance dependent on the model and hardware.
 - Audio sources and providers can be replaced without changing the viewer's message format.
 
-## Language modes
+## Languages
 
-- The speaker language selects the mode. An English speaker has German and Arabic listeners, and a German speaker has English and Arabic listeners. A conversation whose speakers switch between English and German, `en+de`, has English, German and Arabic listeners. The mode is chosen at startup with `--speaker`, `LIVESUBS_SESSION_SPEAKER` or `session.speaker`.
-- The default viewer receives the mode's first target: German for an English speaker, English for a German speaker or a conversation. Every other target needs the viewer's explicit choice.
-- In a conversation each viewer reads one language, whoever is speaking. Every segment goes to the translator of every language with readers, including the language it was spoken in, so a viewer never receives the transcript. A conversation uses one shared microphone, so the speech of people talking at once is not separated.
-- The server sends each viewer one language only and strips the speaker's own words, so filtering never depends on the viewer page.
+- Every session offers English, German and Arabic subtitles. The recognition setting is independent: Automatic detects English/German turns, while English and German pin the recogniser to one language. Startup and the operator console offer both automatic behaviour and a manual override.
+- Each attendee reads one language throughout the conversation. A wholly same-language commitment uses transcription for its matching reader; mixed or unknown commitments require translation for every demanded target. [Segmentation](03-segmentation.md) defines the language-evidence rules.
+- A plain QR scan selects a supported phone language, otherwise the operator's fallback. Visible language buttons override it. [Viewer controls](06-overlay-spec.md) define URL precedence and reconnect behaviour.
+- The server sends each viewer only that language's output and strips raw-source fields, word timings and other targets. A transcription can be the viewer's own output text; raw-source access remains operator-only.
 - The source text stays in the pipeline and reaches the operator console, so a mistranslation can be diagnosed.
-- `session.targets` can narrow a mode to some of its targets. Adding a language or a mode is a registry entry described in [11-extending](11-extending.md).
+- Recognition is shared while viewers exist. Translation runs only for demanded targets that need it. [Configuration](12-configuration.md) defines supported settings and migration.
 
 ## Non-goals
 

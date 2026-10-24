@@ -16,7 +16,7 @@ livesubs --serve --approach live --audio pw:TARGET
 ```
 
 - A direct `--serve` invocation skips the interactive picker and startup probes.
-- The speaker language selects the mode: `--speaker en` (the default) serves German and Arabic listeners, `--speaker de` serves English and Arabic listeners, and `--speaker en+de` serves a conversation that switches between English and German, with English, German and Arabic listeners. `LIVESUBS_SESSION_SPEAKER` and `session.speaker` set the same thing, and `session.targets` narrows the offered languages.
+- Recognition defaults to Automatic for English/German turns. Startup offers an override and fallback selection; `/admin` changes both during the run. English, German and Arabic subtitles stay offered under every setting. Use a manual pin when the speech is known to remain in one language.
 
 ```bash
 livesubs --speaker de
@@ -73,11 +73,11 @@ sudo ufw allow 8000/tcp comment 'livesubs'
 | 1 | Capture target present | `uv run livesubs --preflight` | the configured source exists |
 | 2 | Capture carries signal | speak during preflight | a measured speech signal, not digital silence |
 | 3 | Capture not clipping | the `--preflight` clipping line | no clipping |
-| 4 | Language pairing sane | speak 10 s of test speech in the speaker's language, with a viewer connected for each language to offer | each language appears, roughly correct |
+| 4 | Language routing sane | Speak English/German test turns with a viewer in each target; include a mixed boundary. | Each target stays in its own language; matching homogeneous speech needs no MT. |
 | 5 | Latency acceptable | per-segment latency lines during rehearsal | no growing lag |
 | 6 | QR reachable | one phone, mobile data off | the page loads |
 | 7 | Providers verified | the launcher probe, or `uv run livesubs --set-key NAME --verify` | the provider accepts the key |
-| 8 | Requested target ready | connect its viewer and inspect output | The target warms on demand, not while there are no viewers. |
+| 8 | Requested target ready | Connect its viewer and inspect transcript and translated output. | MT warms only when a demanded item needs translation. |
 | 9 | Archive recording | `recordings/` | a WAV file growing |
 | 10 | Power | laptop on mains, sleep disabled | none |
 
@@ -96,6 +96,7 @@ sudo ufw allow 8000/tcp comment 'livesubs'
 ## Capacity
 
 - Measured with `tools/load_test.py` against `livesubs --serve --approach sim --speed 4`, on a 16-core development laptop, with the load generator on the same machine and the loopback interface in between. Each row used a fresh server, 80% of phones reading the default language and 20% reading Arabic, and 30 s connected after a ramp of up to 30 s.
+- These measurements predate automatic language routing and its transcription-only finals. They have not been rerun for the redesigned message mix.
 - Each phone behaved like the viewer page: it answered every heartbeat and acknowledged every final line. The publisher sent each phone between 1.6 and 2 messages per second, which is a line every few seconds with a first draft and a final.
 
 | Phones | Event-loop lateness (95th) | Processor | Memory | Final lines delivered to every phone |
@@ -142,7 +143,8 @@ sudo ufw allow 8000/tcp comment 'livesubs'
 | ASR events raise in the collector. | The pipeline publishes an ASR error, without switching providers. |
 | MT raises or returns no text. | One quick retry. If it still fails, the segment is dropped with an MT error, or finished with a trailing `…` if words were already shown. Later segments continue. |
 | MT is slower than the speaker. | `delayed` for that language at 3 queued segments. Past 6 the oldest queued segments are discarded. Other languages are unaffected. |
-| A translator cannot be built or warmed. | That language shows `delayed` and its start is retried with backoff. Other languages and recognition continue. |
+| A translator cannot be built or warmed. | The MT-required item fails within its bounded request/retry path. The target worker remains available for later eligible transcription; that success does not clear the MT outage. |
+| A manual speaker change cannot open. | The console retains requested intent and shows retrying or failed. It does not silently revert. Change settings during a pause because reconnecting can leave recognition gaps. |
 
 ## Logging
 
@@ -185,10 +187,10 @@ sudo ufw allow 8000/tcp comment 'livesubs'
 
 - `uv run python tools/rehearse.py` runs the sample corpus live. It defaults to `--approach live` and the file `samples/sample-16k-mono.wav` at real time.
 - `uv run python tools/rehearse.py --approach live-text --cues samples/reference.en.timed.srt` translates a timed transcript instead.
-- The tool starts the server, waits for its readiness log, then starts the player. This reduces manual timing error after provider startup, but is not sample-accurate audio synchronisation.
+- The tool starts the server, waits for the provider-neutral recognition readiness log, then starts the player. Connect a viewer before its timeout. Readiness does not wait for MT warm-up, which transcription-only readers never need. Playback/capture alignment is still approximate, not sample-accurate.
 - Ctrl-C stops the player and the server together. The server sets `PR_SET_PDEATHSIG`, so it dies with the tool. The player does not, so a player can survive a `SIGKILL` of the tool, and it exits at the end of the file.
 - `--no-play` runs without sound.
-- `--speaker de` rehearses a German speaker, and `--speaker en+de` rehearses a conversation.
+- `--speaker de` pins German recognition; `--speaker auto` uses English/German automatic recognition. The old `en+de` spelling is a deprecated alias.
 - `--player` takes any command containing `{file}`.
 - The default player is the first available of `gst-play-1.0`, `pw-play` and `aplay`, so one of them must be installed for sound.
 

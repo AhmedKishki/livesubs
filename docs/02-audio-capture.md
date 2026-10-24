@@ -163,23 +163,24 @@ pw-record \
 - A live-pipeline run with audio and subtitle saving enabled produces files with one session-and-timestamp stem.
 
 ```text
-demo-20260922-150745.wav       16 kHz mono, the audio the timings refer to
-demo-20260922-150745.de.srt    output from the selected MT adapter, here German
-demo-20260922-150745.en.srt    the speaker's words, here English
-demo-20260922-150745.de.vtt    the same MT output, for a browser <track>
-demo-20260922-150745.en.vtt
+demo-20260922-150745.wav         16 kHz mono, the audio the timings refer to
+demo-20260922-150745.source.srt  raw committed recognition text, English and/or German
+demo-20260922-150745.source.vtt  the same raw text and cue clock
+demo-20260922-150745.en.srt      successful English reader output
+demo-20260922-150745.de.srt      successful German reader output
+demo-20260922-150745.ar.vtt      successful Arabic output, for a browser <track>
 ```
 
 - `capture.subtitles` enables the subtitle writer.
-- Each target language that someone read has its own `.{code}.srt` and `.{code}.vtt` pair on the same audio clock, for example `.ar.srt`. The speaker's words are written once per segment, by whichever translation of it arrives first, so a session that only Arabic viewers read still produces the source file.
-- For a German speaker the source file is `.de.srt` and the targets are `.en` and `.ar`.
-- For a conversation the source file is `.en+de.srt`, holding what was said in either language, and the targets are `.en`, `.de` and `.ar`.
+- Each target language has a separate `.{code}.srt` and `.{code}.vtt` pair on the same audio clock. Only successful demanded output is appended: a final transcription or a completed translation, never a failed/truncated MT line.
+- Raw text is written once at source commitment, in sequence order, independently of target completion or failure. Its `.source` identity cannot collide with English or German reader output. A transcription appears once in its target file, not again through a raw-source writer with the same name.
+- Earlier recordings used the configured source code, such as `.en`, `.de` or `.en+de`, for the raw transcript. Existing archives are not renamed. New raw recordings always use `.source`.
 - SRT and WebVTT are both produced because different tools consume them. Both come from one cue model, so they cannot disagree about timings.
-| Mode | English sidecar | MT sidecar |
+| Approach | Raw `.source` sidecar | Reader sidecars |
 | --- | --- | --- |
-| `live` | Contains recognition output. | Contains generated translation. |
-| `live-text` | Contains the supplied timed transcript. | Contains generated translation. |
-| `live-sim` | Contains invented stub phrases. | Contains a `[passthrough]` English echo. |
+| `live` | Contains committed recognition output. | Contains eligible same-language transcription or generated translation. |
+| `live-text` | Contains the supplied timed transcript. | Uses transcription only with trusted homogeneous-language evidence; otherwise contains generated translation. |
+| `live-sim` | Contains invented stub phrases. | Contains English transcription or a `[passthrough]` echo, not a real translation. |
 
 - The files preserve pipeline output, not a separate post-lecture correction pass.
 

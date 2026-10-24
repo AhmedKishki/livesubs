@@ -19,12 +19,12 @@
 | [12-configuration](12-configuration.md) | Configuration resolution, settings, credentials, and the command reference. | Changing settings or using less common commands. |
 | [Sample corpus](../samples/README.md) | Corpus preparation, scoring, timed-reference alignment, and reference limitations. | Replaying or evaluating sample audio. |
 
-## Proposed changes
+## Design records
 
 | File | Scope | When to read |
 | --- | --- | --- |
-| [13-multilingual-design](13-multilingual-design.md) | Approved requirements and acceptance checks for automatic speaker languages and live overrides. Not implemented. | Implementing or reviewing the multilingual redesign. |
-| [14-multilingual-implementation](14-multilingual-implementation.md) | TDD sequence, shared interfaces, API choices and verification for the approved redesign. | Implementing the multilingual redesign. |
+| [13-multilingual-design](13-multilingual-design.md) | Approved requirements and acceptance checks behind automatic speaker languages and live overrides. | Reviewing the design decisions rather than the current operational contract. |
+| [14-multilingual-implementation](14-multilingual-implementation.md) | TDD sequence, shared interfaces, API choices and verification used for the redesign. | Reviewing the implementation plan rather than an active backlog. |
 
 ## Source and input files
 

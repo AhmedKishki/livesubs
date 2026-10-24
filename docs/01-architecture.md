@@ -9,14 +9,15 @@
   [ INGEST ]   DC offset, adaptive noise floor, energy VAD, metering, clipping report
         |      this layer is the pipeline clock: time is derived from samples consumed
         |
-        |------ every frame, continuously ------> [ ASR ]  streaming adapter
-        |                                          partials, finals, word timings
+        |------ frames while viewers exist -----> [ ASR ]  streaming adapter
+        |                                          partials, finals, word languages
         v
   [ SEGMENTER ]  silence >= endpoint_silence_ms OR elapsed >= max_segment_ms
-        |        commits the recognised text since the last cut as one segment
+        |        commits text and its source-language classification
+        |------ source commitment -------------> [ RAW SUBTITLES ] optional
         v
-  [ MT <lang> ]  one ordered stream per target language, active only while someone reads it
-  [ MT <lang> ]  for example German and Arabic, or English and Arabic
+  [ OUTPUT ]     one ordered worker per target: English, German and Arabic
+        |        matching transcription, otherwise lazy streaming MT
         |
         v
   [ HUB ]        WebSocket fan-out, seq/rev revision protocol, src stripped for viewers
@@ -27,9 +28,9 @@
 
 ## Concurrency and ordering
 
-- Startup prepares capture. Paid recognition and translation start with the first viewer and pause with the last disconnect. Capture and its archive clock continue while idle; those frames are not buffered for later recognition.
+- Startup prepares capture. Paid recognition starts with the first viewer and pauses with the last disconnect. Each target performs MT only with readers and an item that needs translation. Capture and its archive clock continue while idle; those frames are not buffered for later recognition.
 - Capture reads frames and feeds ingest. It never publishes.
-- One ASR stream and segmenter feed independent ordered translation workers, one per target language. Each language has its own context, queue and revision counter, so a slow request in one language does not block another.
+- One ASR stream and segmenter feed independent ordered output workers, one per target language. Transcription and MT use the same queue. Each language has its own context and revision counter, so a slow request in one language does not block another or get overtaken within its target.
 - Capture pushes each frame to ASR before updating the segmenter, without waiting for recognition responses.
 - Ingest uses a sample-derived clock. File acceleration changes wall-clock pacing, not the underlying audio timestamps.
 
@@ -38,13 +39,13 @@
 | Stage | Input | Output |
 | --- | --- | --- |
 | Ingest | PCM frames | Speech flag, levels, audio clock |
-| Segmenter | Speech flag, provider endpointing, cap | Emit decision and the committed source text |
-| ASR | Every PCM frame | Partial and final source-language text, word timings |
-| MT | One committed source segment plus target-specific context | Streaming text in one target language |
+| Segmenter | Speech flag, provider endpointing, cap | Emit decision and committed source text/classification |
+| ASR | PCM while viewers exist | Partial/final text, optional word timings and language evidence |
+| Target output | One committed source record plus target-specific context | One final transcription or streamed MT output in that language |
 | Hub | Revisions | One JSON envelope per message per viewer |
 
-- A segment's source text is what the recogniser has produced since the previous cut, assembled from settled chunks and the open hypothesis. Text already sent is never sent again, and later ASR updates do not change it.
-- MT starts after source commitment and publishes draft revisions as target text accumulates. A target without viewers is not warmed or called.
+- A segment's source text is assembled from settled chunks and the open hypothesis. Language evidence follows surviving tokens through cuts. Later ASR updates cannot change a committed segment; the known retimed-word repetition defect remains on the roadmap.
+- Source recording observes commitment once, before independent target work. Target output starts after commitment. A matching transcription needs no translator, while an MT-required item builds and warms its translator within the request deadline. A target without viewers is not warmed or called.
 
 ## Latency budget
 
