@@ -55,8 +55,9 @@ from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 from livesubs.asr.base import AsrConfig, AsrEvent
+from livesubs.asr.deepgram_languages import validate_selection
 from livesubs.events import WordTiming
-from livesubs.languages import spoken as spoken_languages
+from livesubs.speakers import routing_language
 
 __all__ = ["DEFAULT_URL", "DeepgramAsr"]
 
@@ -77,10 +78,6 @@ _STALE_AFTER_S = 12.0
 #: below the pipeline's own flush grace (``pipeline._FLUSH_GRACE_S``, 0.5 s), or the
 #: utterance that was open when the audio stopped is lost.
 _FLUSH_GRACE_S = 0.4
-
-#: The languages ``language=multi`` switches between, from Deepgram's models and languages
-#: overview (checked 2026-10-23). Flux's multilingual model lists the same ten.
-_CODE_SWITCHING = frozenset({"en", "es", "fr", "de", "hi", "ru", "pt", "ja", "it", "nl"})
 
 #: The endpointing Deepgram's code-switching guide recommends, in milliseconds.
 _CODE_SWITCHING_ENDPOINTING_MS = 100
@@ -156,24 +153,12 @@ class DeepgramAsr:
         speech-recognition problem.
         """
 
-        spoken = spoken_languages(cfg.language)
-        conversation = len(spoken) > 1
-        selected = "multi" if conversation else cfg.language
-        if self.language is not None and _word_language(self.language) != selected:
-            raise ValueError("Deepgram language override contradicts the recognition setting")
-        if conversation and self.model != "nova-3":
-            raise ValueError("Automatic recognition requires Deepgram nova-3")
-        if conversation:
-            unswitchable = [code for code in spoken if code not in _CODE_SWITCHING]
-            if unswitchable:
-                raise ValueError(
-                    f"Deepgram cannot switch between {', '.join(spoken)} in one stream: "
-                    f"{', '.join(unswitchable)} is not in its multilingual model"
-                )
+        selected = validate_selection(self.model, cfg.language, self.language)
+        conversation = selected == "multi"
 
         params = [
             ("model", self.model),
-            ("language", self.language or ("multi" if conversation else cfg.language)),
+            ("language", selected),
             ("encoding", "linear16"),
             ("sample_rate", str(cfg.sample_rate)),
             ("channels", str(cfg.channels)),
@@ -542,4 +527,4 @@ def _word_language(value: Any) -> str | None:
 
     if value is None:
         return None
-    return str(value).strip().lower().replace("_", "-").split("-", 1)[0]
+    return routing_language(str(value))

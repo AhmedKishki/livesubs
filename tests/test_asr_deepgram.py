@@ -47,7 +47,7 @@ def test_a_partial_results_message_becomes_a_partial_event() -> None:
 
 
 @pytest.mark.parametrize("label,expected", [("EN-US", "en"), ("de-CH", "de"),
-                                           ("fr-CA", "fr"), (None, None)])
+                                           ("fr-CA", "fr-ca"), (None, None)])
 def test_word_language_is_normalized_without_erasing_unsupported(label, expected) -> None:
     event = _parse_message(_results(channel={"alternatives": [{
         "transcript": "hello", "languages": ["en"], "words": [
