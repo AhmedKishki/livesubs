@@ -143,6 +143,11 @@ class DeepgramAsr:
 
     # --- the wire -------------------------------------------------------------
 
+    def validate_config(self, cfg: AsrConfig) -> None:
+        """Validate stream options at startup without opening a connection."""
+
+        self._uri(cfg)
+
     def _uri(self, cfg: AsrConfig) -> str:
         """The listen URL, with every option the provider needs to decode correctly.
 
@@ -152,7 +157,12 @@ class DeepgramAsr:
         """
 
         spoken = spoken_languages(cfg.language)
-        conversation = self.language is None and len(spoken) > 1
+        conversation = len(spoken) > 1
+        selected = "multi" if conversation else cfg.language
+        if self.language is not None and _word_language(self.language) != selected:
+            raise ValueError("Deepgram language override contradicts the recognition setting")
+        if conversation and self.model != "nova-3":
+            raise ValueError("Automatic recognition requires Deepgram nova-3")
         if conversation:
             unswitchable = [code for code in spoken if code not in _CODE_SWITCHING]
             if unswitchable:
@@ -488,6 +498,7 @@ def _parse_message(raw: str | bytes) -> AsrEvent | None:
             start_ms=max(0, round(float(word.get("start", 0.0)) * 1000)),
             end_ms=max(0, round(float(word.get("end", 0.0)) * 1000)),
             confidence=word.get("confidence"),
+            language=_word_language(word.get("language")),
         )
         for word in alternative.get("words") or []
         if word.get("word") and isinstance(word.get("start"), (int, float))
@@ -524,3 +535,11 @@ def _parse_message(raw: str | bytes) -> AsrEvent | None:
         words=words or None,
         speech_final=speech_final,
     )
+
+
+def _word_language(value: Any) -> str | None:
+    """Normalise provider tags without discarding unsupported explicit evidence."""
+
+    if value is None:
+        return None
+    return str(value).strip().lower().replace("_", "-").split("-", 1)[0]

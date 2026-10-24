@@ -196,3 +196,10 @@ def test_what_a_viewer_may_send_is_part_of_the_contract() -> None:
 
     with pytest.raises(ValidationError):
         CLIENT_ADAPTER.validate_python({"type": "hello"})
+def test_optional_word_language_preserves_evidence_without_version_bump():
+    from livesubs.events import EVENT_VERSION, WordTiming
+
+    assert EVENT_VERSION == 2
+    word = WordTiming(text="hi", start_ms=0, end_ms=1, language="fr")
+    assert word.model_dump()["language"] == "fr"
+    assert WordTiming(text="hi", start_ms=0, end_ms=1).language is None

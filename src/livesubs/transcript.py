@@ -34,7 +34,15 @@ from dataclasses import dataclass
 
 from livesubs.asr.base import AsrEvent
 
-__all__ = ["Token", "TranscriptAssembler"]
+__all__ = ["Token", "TranscriptAssembler", "TranscriptCommit"]
+
+
+@dataclass(frozen=True, slots=True)
+class TranscriptCommit:
+    """Text and frozen source classification of one consumption of unsent tokens."""
+
+    text: str
+    language: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +52,7 @@ class Token:
     text: str
     start_ms: int | None = None
     end_ms: int | None = None
+    language: str | None = None
 
     @property
     def timed(self) -> bool:
@@ -134,9 +143,16 @@ class TranscriptAssembler:
     def commit(self) -> str:
         """Release the unsent text, and remember that it has been sent."""
 
+        return self.commit_source().text
+
+    def commit_source(self, pin: str | None = None) -> TranscriptCommit:
+        """Consume unsent tokens once, classifying only their retained evidence."""
+
+        if pin not in (None, "en", "de"):
+            raise ValueError("source pin must be en, de or None")
         tokens = [*self._settled, *self._tail]
         if not tokens:
-            return ""
+            return TranscriptCommit("", "unknown")
 
         ends = [token.end_ms for token in tokens if token.end_ms is not None]
         if ends:
@@ -149,12 +165,28 @@ class TranscriptAssembler:
         text = self.text
         self._settled = []
         self._tail = []
-        return text
+        return TranscriptCommit(text, _classify(tokens, pin))
 
 
 def _tokens_of(event: AsrEvent) -> list[Token]:
     if event.words:
         return [
-            Token(word.text, word.start_ms, word.end_ms) for word in event.words if word.text
+            Token(word.text, word.start_ms, word.end_ms, word.language)
+            for word in event.words if word.text
         ]
-    return [Token(word) for word in event.text.split()]
+    return [Token(word, language=event.language) for word in event.text.split()]
+
+
+def _classify(tokens: list[Token], pin: str | None) -> str:
+    labels = {token.language for token in tokens}
+    if pin is not None:
+        return pin if labels <= {None, pin} else "unknown"
+    if labels - {None, "en", "de"}:
+        return "unknown"
+    if labels == {"en"}:
+        return "en"
+    if labels == {"de"}:
+        return "de"
+    if {"en", "de"} <= labels:
+        return "mixed"
+    return "unknown"

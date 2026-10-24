@@ -64,6 +64,8 @@ class AsrEvent:
     confidence: float | None = None
     words: list[WordTiming] | None = None
     speech_final: bool = False
+    #: A guarantee that every textual token has this language, never a dominant language.
+    language: str | None = None
 
 
 @runtime_checkable

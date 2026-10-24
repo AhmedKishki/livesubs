@@ -69,6 +69,7 @@ class WordTiming(BaseModel):
     start_ms: int = Field(ge=0)
     end_ms: int = Field(ge=0)
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    language: str | None = None
 
 
 class Timing(BaseModel):

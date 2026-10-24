@@ -10,6 +10,7 @@ was overwritten by the next chunk's interim, so words such as a surname vanished
 from __future__ import annotations
 
 import random
+from dataclasses import FrozenInstanceError
 
 import pytest
 
@@ -333,3 +334,94 @@ def test_every_word_is_sent_exactly_once_whatever_the_cuts(seed: int) -> None:
     sent.extend(assembler.commit().split())
 
     assert sent == truth
+
+
+@pytest.mark.parametrize(
+    ("labels", "pin", "expected"),
+    [
+        (["en", "en"], None, "en"),
+        (["de", "de"], None, "de"),
+        (["en", "de", None], None, "mixed"),
+        (["en", "de", "fr"], None, "unknown"),
+        (["en", None], None, "unknown"),
+        ([None, None], None, "unknown"),
+        ([None, "en"], "en", "en"),
+        ([None, "de"], "en", "unknown"),
+        ([None, "fr"], "de", "unknown"),
+    ],
+)
+def test_commit_classifies_exact_word_evidence(labels, pin, expected) -> None:
+    assembler = TranscriptAssembler()
+    event = partial(" ".join(f"w{i}" for i in range(len(labels))))
+    for word, label in zip(event.words, labels, strict=True):
+        word.language = label
+    assembler.feed(event)
+    committed = assembler.commit_source(pin=pin)
+    assert committed.text == event.text
+    assert committed.language == expected
+    assert assembler.commit() == ""
+    assert assembler.commit_source().language == "unknown"
+
+
+@pytest.mark.parametrize("guarantee,pin,expected", [
+    (None, None, "unknown"), ("de", None, "de"),
+    (None, "en", "en"), ("de", "en", "unknown"), ("fr", None, "unknown"),
+])
+def test_untimed_guarantee_and_manual_pin(guarantee, pin, expected) -> None:
+    assembler = TranscriptAssembler()
+    event = partial("some text", timed=False)
+    event.language = guarantee
+    assembler.feed(event)
+    assert assembler.commit_source(pin=pin).language == expected
+
+
+def test_language_corrections_do_not_report_speech_and_sent_words_do_not_leak() -> None:
+    assembler = TranscriptAssembler()
+    event = partial("hello")
+    event.words[0].language = "de"
+    assembler.feed(event)
+    event.words[0].language = "en"
+    assert assembler.feed(event) is False
+    first = assembler.commit_source()
+    assert first.language == "en"
+    later = final("hello Welt")
+    later.words[0].language = "fr"
+    later.words[1].language = "de"
+    assembler.feed(later)
+    assert assembler.commit_source().language == "de"
+    assert first.language == "en"
+    assembler.reset()
+    assembler.feed(partial("fresh", timed=False))
+    assert assembler.commit_source().language == "unknown"
+
+
+def test_settled_and_open_languages_combine_and_legacy_commit_consumes() -> None:
+    assembler = TranscriptAssembler()
+    one = final("hello")
+    one.words[0].language = "en"
+    two = partial("Welt", 1000)
+    two.words[0].language = "de"
+    assembler.feed(one)
+    assembler.feed(two)
+    assert assembler.commit_source().language == "mixed"
+    assembler.reset()
+    assembler.feed(one)
+    assert assembler.commit() == "hello"
+    assert assembler.commit_source().text == ""
+
+
+def test_commit_is_immutable_and_untimed_cuts_keep_only_unsent_evidence() -> None:
+    assembler = TranscriptAssembler()
+    event = partial("hello", timed=False)
+    event.language = "en"
+    assembler.feed(event)
+    committed = assembler.commit_source()
+    with pytest.raises(FrozenInstanceError):
+        committed.language = "de"
+    event = final("hello Welt", timed=False)
+    event.language = "de"
+    assembler.feed(event)
+    assert assembler.commit_source().text == "Welt"
+    assembler.reset()
+    assembler.feed(event)
+    assert assembler.commit_source().language == "de"

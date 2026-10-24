@@ -46,6 +46,63 @@ def test_a_partial_results_message_becomes_a_partial_event() -> None:
     assert event.confidence == pytest.approx(0.94)
 
 
+@pytest.mark.parametrize("label,expected", [("EN-US", "en"), ("de-CH", "de"),
+                                           ("fr-CA", "fr"), (None, None)])
+def test_word_language_is_normalized_without_erasing_unsupported(label, expected) -> None:
+    event = _parse_message(_results(channel={"alternatives": [{
+        "transcript": "hello", "languages": ["en"], "words": [
+            {"word": "hello", "start": 0, "end": 1, "language": label}
+        ]
+    }]}))
+    assert event.words[0].language == expected
+    assert event.language is None
+
+
+def test_alternative_language_is_not_a_homogeneous_text_guarantee() -> None:
+    event = _parse_message(_results(channel={"alternatives": [
+        {"transcript": "hello Welt", "languages": ["en"], "language": "en"}
+    ]}))
+    assert event.language is None
+
+
+@pytest.mark.parametrize("source,language,model", [
+    ("en+de", "en", "nova-3"), ("en", "multi", "nova-3"),
+    ("de", "en", "nova-3"), ("en+de", None, "nova-2"),
+])
+def test_incompatible_overrides_fail_before_network(source, language, model) -> None:
+    with pytest.raises(ValueError):
+        DeepgramAsr(api_key="k", language=language, model=model)._uri(AsrConfig(language=source))
+
+
+@pytest.mark.parametrize("source,language,model", [
+    ("en+de", "en", "nova-3"), ("de", "multi", "nova-3"),
+    ("en+de", None, "nova-2"),
+])
+def test_public_config_validation_rejects_incompatible_overrides(source, language, model):
+    adapter = DeepgramAsr(api_key="k", language=language, model=model)
+    with pytest.raises(ValueError):
+        adapter.validate_config(AsrConfig(language=source))
+
+
+@pytest.mark.parametrize("source,language", [("en+de", None), ("de", "de-CH"), ("en", "en")])
+def test_public_config_validation_is_pure_and_accepts_compatible_settings(source, language):
+    adapter = DeepgramAsr(api_key="k", language=language)
+    assert adapter.validate_config(AsrConfig(language=source)) is None
+    assert adapter._socket is None
+    assert adapter._sender is None
+    assert adapter._reader is None
+    assert not adapter.healthy
+
+
+def test_public_config_validation_delegates_to_authoritative_uri(monkeypatch):
+    adapter = DeepgramAsr(api_key="k")
+    cfg = AsrConfig(language="de")
+    calls = []
+    monkeypatch.setattr(adapter, "_uri", lambda received: calls.append(received) or "unused")
+    assert adapter.validate_config(cfg) is None
+    assert calls == [cfg]
+
+
 def test_a_settled_chunk_is_final_but_is_not_an_endpoint() -> None:
     """``final`` means the span is settled; ``speech_final`` is the separate endpoint hint.
 
