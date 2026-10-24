@@ -9,13 +9,14 @@
 - Adapter status: the only implemented speech-recognition adapter.
 - Registry default host: `wss://api.deepgram.com`, the United States endpoint.
 - EU residency: the `api.eu.deepgram.com` endpoint exists as an opt-in option, not the default.
-- Automatic recognition requires `nova-3` and opens one `language=multi` stream. English/German manual pins open a single-language stream; contradictory language/model overrides fail configuration validation instead of silently defeating the setting.
+- Automatic recognition uses `nova-3` or its `nova-3-general` alias and opens one `language=multi` stream, retaining the application's English/German routing. Manual selection opens the exact documented monolingual code; contradictory language/model overrides fail validation rather than silently defeating the choice.
 - Deepgram's [code-switching guide](https://developers.deepgram.com/docs/multilingual-code-switching), checked 2026-10-24, recommends `endpointing=100` over the 10 ms default, so the adapter sends it in Automatic unless `endpointing_ms` is set. Keyterms work with `multi`.
-- Nova-3 now documents 55 multilingual languages, including Arabic, in the [language overview](https://developers.deepgram.com/docs/models-languages-overview), checked 2026-10-24. LiveSubs still supports English/German speech only. The ten-language code-switching set applies to Flux, not the current Nova-3 documentation.
+- Nova-3 documents 55 multilingual languages in the [language overview](https://developers.deepgram.com/docs/models-languages-overview), checked 2026-10-24. Manual choices use its separate monolingual rows, not the union of those sets. They include Arabic and regional codes, Mandarin script variants and the distinct Cantonese `zh-HK` selection. The ten-language code-switching set applies to Flux, not current Nova-3 documentation.
+- The reviewed catalogue covers Nova-3/Nova-2 general aliases and the narrower documented specialist models. Nova-2 general does not offer Arabic; specialist English models do not inherit general-model coverage. Unknown/custom models and unimplemented transports are rejected instead of receiving a guessed language list. This is documentation-verified capability, not account entitlement or live recognition-quality verification.
 - Price: Nova-3 streaming at **$0.0048/min**, about **$0.43** per 90-minute lecture.
 - Vendor documentation recommends Nova-3 for far-field, noisy and multi-speaker audio.
 - Capture format: 16 kHz mono `linear16`, the format the capture path already produces.
-- Word evidence includes timings, confidence and optional language labels. Missing or unsupported language evidence takes the conservative translation path, not a guessed passthrough language.
+- Word evidence includes timings, confidence and optional language labels. Preserve non-target locale/script distinctions. [Segmentation](03-segmentation.md) defines conservative automatic classification and manual-pin inheritance.
 - Translation: none, so machine translation is a separate stage.
 - Flux adds model-native end-of-turn detection. Its different endpoint/event contract remains an adapter/evaluation task rather than the Automatic implementation.
 - A recorded API run returned punctuated Deepgram finals with word timings and no dropped frames at real time. The run date and corpus were not recorded with that observation.
@@ -36,7 +37,7 @@
 
 ## Machine translation
 
-- Each session offers English, German and Arabic. Eligible same-language transcription avoids MT; other demanded outputs, including every Arabic output, use the target translator. Mixed or unknown commitments use MT for all demanded targets.
+- Each session offers English, German and Arabic. Eligible same-language transcription avoids MT, including Arabic under a matching manual pin. Other demanded outputs use the target translator; a manual source outside the three reader languages needs MT for all demanded targets. Mixed or unknown commitments also use MT for all demanded targets.
 - The recorded cost and quality comparisons below use English-to-German workloads. Arabic and German-to-English costs and quality have not been measured against the corpus.
 
 ### DeepSeek `deepseek-flash`, the default
@@ -63,7 +64,7 @@
 - It can bake a glossary into the frozen system prompt. No glossary is configured, so the list is empty.
 - It does not use JSON output or Chat Prefix Completion.
 - It calls `warm()` lazily before a demanded target's first MT-required item. Cache construction can take seconds; warming does not guarantee a cache hit or response time. Transcription-only output does not warm it.
-- Each target has a frozen English/German subtitle-rendering prompt with the configured provider and key, independent of recognition pin. It keeps target-language portions of mixed input. A target stops making requests when its audience is empty.
+- Each target has a frozen generic multilingual subtitle-rendering prompt with the configured provider and key, independent of recognition pin. It keeps target-language portions of mixed input without enumerating every source in the prompt. A target stops making requests when its audience is empty.
 - Recorded API observations put DeepSeek time to first token at 489–909 ms per segment. The run date and corpus were not recorded with those observations, so the range is not a performance guarantee.
 - Vendor features not used by the adapter include Chat Prefix Completion (beta), which pre-fills an assistant reply, and JSON Output, which constrains a response to an object such as `{"de": "..."}`.
 

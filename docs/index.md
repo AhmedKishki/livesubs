@@ -23,7 +23,7 @@
 
 | File | Scope | When to read |
 | --- | --- | --- |
-| [13-multilingual-design](13-multilingual-design.md) | Approved requirements and acceptance checks behind automatic speaker languages and live overrides. | Reviewing the design decisions rather than the current operational contract. |
+| [13-multilingual-design](13-multilingual-design.md) | Original English/German redesign requirements, before the manual-source catalogue extension. | Reviewing historical design decisions rather than the current operational contract. |
 | [14-multilingual-implementation](14-multilingual-implementation.md) | TDD sequence, shared interfaces, API choices and verification used for the redesign. | Reviewing the implementation plan rather than an active backlog. |
 
 ## Source and input files
@@ -36,6 +36,8 @@
 | [launcher.py](../src/livesubs/launcher.py) | Microphone choice and credential setup before serving. | Changing live startup. |
 | [audio/selection.py](../src/livesubs/audio/selection.py) | Arrow-key selection and terminal restoration. | Changing terminal input. |
 | [languages.py](../src/livesubs/languages.py) | The language registry and the speaker-language modes. | Adding a language or a mode. |
+| [speakers.py](../src/livesubs/speakers.py) | Neutral speaker-option records, exact source-code normalisation and routing identities. | Changing manual recognition settings without expanding subtitle targets. |
+| [asr/deepgram_languages.py](../src/livesubs/asr/deepgram_languages.py) | Reviewed model-specific monolingual codes, aliases, restrictions and source provenance. | Updating supported manual Deepgram languages or model validation. |
 | [language.js](../web/static/language.js) | Viewer language selection, role mapping, interface strings and target text filtering. | Changing viewer language behaviour. |
 | [metrics.py](../src/livesubs/metrics.py) | The figures the operator console shows: rolling windows, delivery counters, event-loop lateness and process limits. | Adding or changing an operator figure. |
 | [stats.js](../web/static/stats.js) | Formatting and the thresholds that decide what the console flags. | Changing what the console flags. |

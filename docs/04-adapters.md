@@ -31,7 +31,7 @@ class AsrProvider(Protocol):
 ```
 
 - `push` takes raw 16 kHz mono s16le PCM. Adapters handle their own framing and transport.
-- `AsrConfig.language` is `en+de` for Automatic, or `en`/`de` for a manual pin. The user-facing `auto` setting is not a language-registry code. An unavailable configuration is rejected before audio is sent; Deepgram also exposes pure `validate_config()` for startup validation without a connection.
+- `AsrConfig.language` is `en+de` for Automatic, or the exact supported manual code, such as `ar-EG`, `fr` or `zh-HK`. The user-facing `auto` setting is not an ASR language code. An unavailable configuration is rejected before audio is sent; Deepgram exposes pure capability and `validate_config()` helpers without keys or a connection.
 - `words` may be `None`. Deepgram supplies word timings. OpenAI's live transcription models do not, and must not be assumed to.
 - A word's optional `language` is provider-neutral evidence. Normalise regional tags inside the adapter without erasing unsupported labels. `AsrEvent.language` guarantees the entire event is homogeneous; a dominant alternative language or language list is insufficient. [Segmentation](03-segmentation.md) owns commitment classification and manual inheritance.
 - Only Deepgram has a built ASR adapter. OpenAI is registered as planned: it can hold a key and satisfies nothing, so a key for it alone does not pass `--check`.
@@ -65,11 +65,12 @@ class MtProvider(Protocol):
 - `translate` yields text deltas. The publisher accumulates them into draft revisions, then publishes a final translation. Drafts are spaced at least 120 ms apart after the first words, which go out at once.
 - `translate` raises `MtError` when the request fails, including after some deltas. It never ends normally on a partial translation, because only the pipeline knows what a viewer has already been shown.
 - Any OpenAI-compatible endpoint is accepted for MT when the provider declares `options.adapter: openai_compat`. Without that declaration the provider is refused rather than guessed at.
-- Application translators use a stable English/German subtitle-rendering prompt per target, independent of the recognition pin. It accepts homogeneous, mixed or uncertain text, preserving target-language portions as needed. Conservative same-target requests are valid. Language names come from the registry; the legacy single-source German prompt fixture remains covered separately.
+- Application translators use a stable generic multilingual subtitle-rendering prompt per target, independent of the recognition pin. It accepts any selected source, mixed or uncertain text and preserves target-language portions. The provider-neutral source marker `multilingual` is not looked up as a language code. Source-specific legacy prompts and fixtures remain separately compatible.
 
 ## Session languages
 
 - Every session offers `en`, `de`, `ar`. Speaker settings affect recognition, not target availability or the fallback language.
+- Publishers expose a neutral `speaker_options` tuple of `SpeakerOption(code, name)` records. Application construction resolves supported model/override choices once and uses that same list for startup and runtime validation; simulation advertises only sources it can actually supply.
 - A publisher must declare all three in `supported_languages`; missing capability is rejected rather than silently narrowing the offer. Deprecated full-set configuration and rejected narrowing are described in [configuration](12-configuration.md).
 - The pipeline accepts target providers or factories. A factory is called only for a demanded MT-required item. Successful transcription uses the same context and sink path without counting as MT success or clearing an MT outage.
 
@@ -97,7 +98,7 @@ class MtProvider(Protocol):
 
 | `type` | Purpose |
 | --- | --- |
-| `hello` | Session metadata: version, id/name, stable `source` capability `en+de`, offered `targets`, and this connection's concrete `language`. Recognition intent/state is exposed separately through session controls. |
+| `hello` | Session metadata: version, id/name, stable `source` descriptor `multilingual`, offered `targets`, and this connection's concrete `language`. Recognition intent/state and available manual choices are exposed separately through session controls. |
 | `segment` | a subtitle line, new or revised |
 | `status` | pipeline health: `live`, `delayed` or `stopped`, for everyone or for one `language` |
 | `error` | a stage diagnostic shown to the operator |

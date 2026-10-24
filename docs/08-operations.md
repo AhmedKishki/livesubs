@@ -16,7 +16,7 @@ livesubs --serve --approach live --audio pw:TARGET
 ```
 
 - A direct `--serve` invocation skips the interactive picker and startup probes.
-- Recognition defaults to Automatic for English/German turns. Startup offers an override and fallback selection; `/admin` changes both during the run. English, German and Arabic subtitles stay offered under every setting. Use a manual pin when the speech is known to remain in one language.
+- Recognition defaults to Automatic for English/German turns. Startup offers model-supported manual sources and fallback selection; `/admin` changes both during the run. English, German and Arabic subtitles stay offered under every setting. Select Arabic or another supported manual source when that is the spoken language.
 
 ```bash
 livesubs --speaker de
@@ -80,6 +80,8 @@ sudo ufw allow 8000/tcp comment 'livesubs'
 | 8 | Requested target ready | Connect its viewer and inspect transcript and translated output. | MT warms only when a demanded item needs translation. |
 | 9 | Archive recording | `recordings/` | a WAV file growing |
 | 10 | Power | laptop on mains, sleep disabled | none |
+
+- For a manual source outside the automatic pair, select its exact supported code and rehearse a full turn. A Nova-3 Arabic pin can feed Arabic readers by transcription while English/German readers require translation. Model documentation and stub tests are not a substitute for native-language quality checks.
 
 - Preflight checks source presence, signal, clipping and configuration, then reports network diagnostics. It does not authenticate provider keys.
 - Check 6 is the one preflight cannot finish.
@@ -190,7 +192,7 @@ sudo ufw allow 8000/tcp comment 'livesubs'
 - The tool starts the server, waits for the provider-neutral recognition readiness log, then starts the player. Connect a viewer before its timeout. Readiness does not wait for MT warm-up, which transcription-only readers never need. Playback/capture alignment is still approximate, not sample-accurate.
 - Ctrl-C stops the player and the server together. The server sets `PR_SET_PDEATHSIG`, so it dies with the tool. The player does not, so a player can survive a `SIGKILL` of the tool, and it exits at the end of the file.
 - `--no-play` runs without sound.
-- `--speaker de` pins German recognition; `--speaker auto` uses English/German automatic recognition. The old `en+de` spelling is a deprecated alias.
+- `--speaker ar` pins Arabic when the configured model supports it; `--speaker zh-HK` preserves a supported Cantonese selection. `--speaker auto` retains English/German automatic recognition. The old `en+de` spelling is a deprecated alias.
 - `--player` takes any command containing `{file}`.
 - The default player is the first available of `gst-play-1.0`, `pw-play` and `aplay`, so one of them must be installed for sound.
 

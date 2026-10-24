@@ -93,8 +93,8 @@
 ## Operator console
 
 - `/admin` is always in English. It shows raw recognition and all target outputs for comparison, including final transcriptions. A history row collects one segment's outputs as they arrive.
-- The primary speaker control offers Automatic, English and German. The fallback control offers all three subtitle languages. Both change the current run only, not saved configuration.
-- Recognition status separates requested from active setting and shows paused, applying, active, retrying or failed. The last committed detection is reported separately as English, German, mixed or unknown. A click is not proof a new recognition stream has opened.
+- The primary speaker control uses the configured model's advertised options, including supported manual languages and regional/script codes. Automatic remains English/German. The fallback control offers only the three subtitle languages. Both change the current run only, not saved configuration.
+- Recognition status separates requested from active setting and shows paused, applying, active, retrying or failed. The last committed source classification is reported separately, using the identities defined in [segmentation](03-segmentation.md), including manual Arabic and other sources. A click is not proof a new recognition stream has opened.
 - A manual change reopens recognition without restarting the session or disconnecting readers. The handover has a bounded best-effort flush and can miss speech; change during a pause. Capture/archive and committed target work continue. Failures remain visible without silently reverting to Automatic.
 - It shows the segment history of committed lines and the last few pipeline errors.
 - Operator connections do not count as viewers or keep paid processing active.
@@ -103,7 +103,8 @@
 
 ### Settings requests
 
-- Send a nonempty JSON object containing `speaker` (`auto`, `en`, `de`), `default_language` (`en`, `de`, `ar`), or both. Unknown fields, invalid values or invalid JSON fail validation before either setting changes.
+- `/api/session` publishes `speaker_options` as code/name records, separately from the three subtitle targets. The stable list is not repeated in recurring stats or control responses. The native admin select supports keyboard typeahead and preserves selected regional codes; raw source text uses automatic writing direction for Arabic and other scripts.
+- Send a nonempty JSON object containing an advertised `speaker` code, `default_language` (`en`, `de`, `ar`), or both. Speaker codes are canonicalised, such as `fr-ca` to `fr-CA`, then checked against the publisher's exact capabilities. Unknown fields, unavailable choices, invalid values or invalid JSON fail validation before either setting, revision or recogniser intent changes.
 - HTTP 200 returns `session_id`, control `revision`, desired `speaker`, `default_language` and `recognition` state. Repeating current desired settings is a no-op; fallback-only changes do not reopen recognition. The latest accepted speaker intent supersedes older in-flight changes.
 - Unknown sessions return 404, non-JSON content types 415, invalid requests 422 and foreign or `null` browser Origins 403. Missing Origin is accepted for trusted-LAN non-browser clients; a supplied Origin must match normalised scheme, host and port. No permissive CORS is enabled.
 - These checks are not authentication. Anyone with trusted-LAN access can still operate the service. `/api/session` and `/api/stats.session` expose current control state without lecture text.

@@ -75,7 +75,7 @@
 
 ### Committed source language
 
-- `commit_source(pin=None)` consumes unsent tokens once and returns text plus `en`, `de`, `mixed` or `unknown`. The legacy `commit()` returns only that same consumed text. Empty commitments produce no source segment.
+- `commit_source(pin=None)` consumes unsent tokens once and returns text plus its source identity. Automatic returns `en`, `de`, `mixed` or `unknown`; a manual commitment can also return `ar` or another validated source identity. The legacy `commit()` returns only that same consumed text. Empty commitments produce no source segment.
 - Automatic classification examines only retained tokens, not the dominant language of a larger provider response. Apply the first matching rule below.
 
 | Evidence | Classification |
@@ -87,8 +87,8 @@
 | Any other evidence, including missing labels. | `unknown`. |
 
 - Untimed automatic text needs an adapter guarantee that the entire event is homogeneous; otherwise it stays unknown. Do not fill gaps from majority voting, the previous segment, script or recognition confidence.
-- A manual pin is an operator assertion. Missing token labels, including text-only events, inherit the pin. Any explicit contradictory label makes the commitment unknown. Return to Automatic when speakers resume switching languages.
-- Matching English/German readers receive a final transcription; every other demanded output takes the translation path. All paths stay in each target's ordered queue, so a transcription cannot overtake a previous translation. Classification is frozen at commitment and never revises a final subtitle.
+- A manual pin is an operator assertion. Missing token labels, including text-only events, inherit its routing identity. Any explicit contradictory label makes the commitment unknown. English, German and Arabic regional pins use their corresponding reader-language identity, while other explicit subtags remain distinct: Cantonese `zh-HK` must not become Mandarin `zh`. The exact selected code still reaches ASR unchanged. Return to Automatic for supported English/German switching.
+- Matching English, German or Arabic readers receive a final transcription; every other demanded output takes the translation path. Other manual sources, such as French, therefore translate for all three reader languages. Automatic Arabic evidence remains unknown and takes MT even for Arabic. All paths stay in each target's ordered queue, so a transcription cannot overtake a previous translation. Classification is frozen at commitment and never revises a final subtitle.
 
 ## Interaction with ASR endpointing
 

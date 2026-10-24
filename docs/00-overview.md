@@ -2,7 +2,7 @@
 
 ## What this is
 
-- A server captures English/German speech from one shared microphone and publishes subtitles in each attendee's language.
+- A server captures speech from one shared microphone and publishes English, German or Arabic subtitles to each attendee.
 - Attendees open the viewer page by scanning a QR code on the shared network.
 - Capture runs on the server. The viewer page asks for no microphone permission, so it works over plain HTTP.
 
@@ -22,7 +22,7 @@
 
 ## Languages
 
-- Every session offers English, German and Arabic subtitles. The recognition setting is independent: Automatic detects English/German turns, while English and German pin the recogniser to one language. Startup and the operator console offer both automatic behaviour and a manual override.
+- Every session offers English, German and Arabic subtitles. Automatic retains English/German routing. Startup and the operator console offer manual languages supported by the configured ASR model, including Arabic with Nova-3 general. Manual source choices do not add subtitle languages.
 - Each attendee reads one language throughout the conversation. A wholly same-language commitment uses transcription for its matching reader; mixed or unknown commitments require translation for every demanded target. [Segmentation](03-segmentation.md) defines the language-evidence rules.
 - A plain QR scan selects a supported phone language, otherwise the operator's fallback. Visible language buttons override it. [Viewer controls](06-overlay-spec.md) define URL precedence and reconnect behaviour.
 - The server sends each viewer only that language's output and strips raw-source fields, word timings and other targets. A transcription can be the viewer's own output text; raw-source access remains operator-only.
@@ -35,5 +35,5 @@
 - The application does not combine independent microphones for beamforming.
 - The viewer cannot overlay another application on a projector.
 - Speaker diarization, audience Q&A and speech synthesis are not supported.
-- Speakers of languages other than English and German are not supported. Arabic is a subtitle language only.
+- Automatic routing is not expanded beyond English/German. Other documented source languages require a manual choice; unsupported model/code combinations are rejected rather than guessed.
 - The service has no accounts or authentication. Saved audio and subtitle files are optional, but there is no persistent session database.

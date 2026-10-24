@@ -5,7 +5,7 @@
 ## Constraints
 
 - Keep live microphone capture server-side on Linux with PipeWire. Do not move capture into the browser.
-- Offer English, German and Arabic subtitles independently of the speaker setting (`auto`, `en` or `de`). Resolve a viewer page's language from its explicit URL choice, then its supported browser preferences, then the operator's fallback. Use an explicit `viewer_<code>` role for every viewer page and pin its language across reconnects. Filter other languages, raw source fields and word timings on the server. A wholly same-language segment may supply that viewer's text by transcription; mixed or unknown segments require translation.
+- Offer English, German and Arabic subtitles independently of recognition. Keep Automatic's English/German routing unchanged; manual speaker choices must match the configured ASR model's documented capabilities. Resolve a viewer page's language from its explicit URL choice, then its supported browser preferences, then the operator's fallback. Use an explicit `viewer_<code>` role for every viewer page and pin its language across reconnects. Filter other languages, raw source fields and word timings on the server. A wholly same-language segment may supply that viewer's text by transcription; mixed or unknown segments require translation.
 - Keep paid transcription paused without viewers and each translation paused without demand for its target language.
 - Keep provider transport, types, and exceptions behind the ASR and MT protocols.
 - Reject unavailable live adapters or credentials instead of substituting simulated output.

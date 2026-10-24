@@ -164,7 +164,7 @@ pw-record \
 
 ```text
 demo-20260922-150745.wav         16 kHz mono, the audio the timings refer to
-demo-20260922-150745.source.srt  raw committed recognition text, English and/or German
+demo-20260922-150745.source.srt  raw committed recognition text, including mixed speech
 demo-20260922-150745.source.vtt  the same raw text and cue clock
 demo-20260922-150745.en.srt      successful English reader output
 demo-20260922-150745.de.srt      successful German reader output

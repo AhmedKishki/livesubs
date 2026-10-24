@@ -131,6 +131,7 @@ uv run python tools/check_conversation.py \
 - `live-sim` checks the audio-processing and delivery paths using invented English text and a passthrough echo. Its sidecars are not suitable for recognition or German-quality scores.
 - `live-text` runs the real translator over a timed transcript, which evaluates the German and the overlay without an ASR key.
 - Unit/local-browser tests validate routing and controls without establishing provider recognition quality. A new paid rehearsal is required to measure current accuracy, latency and handover gaps; no such run is claimed by the redesign.
+- Manual-language coverage is documentation-verified per model. Synthetic Arabic and regional-code tests verify routing and configuration only; no new paid or native-reader quality result is implied for Arabic, French, Cantonese or other manual sources. The English/German conversation checker does not score arbitrary source languages.
 
 ## Acceptance targets
 

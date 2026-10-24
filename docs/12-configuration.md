@@ -31,7 +31,7 @@
 | Flag | Applies to |
 | --- | --- |
 | `--host`, `--port`, `--session-id`, `--session-name` | Startup or `--serve`. |
-| `--speaker auto\|en\|de` | Startup, `--serve`, `--check` or `--preflight`. Overrides recognition intent; an explicit flag skips the startup speaker picker. Deprecated `en+de` means `auto`. |
+| `--speaker auto\|CODE` | Startup, `--serve`, `--check` or `--preflight`. Selects Automatic or a model-supported manual code such as `ar`, `fr` or `zh-HK`; an explicit flag skips the startup speaker picker. Deprecated `en+de` means `auto`. |
 | `--exit-on-failure` | Startup or `--serve`. Exit with status 1 if the pipeline dies, so a supervisor restarts the process. |
 | `--script`, `--speed`, `--once` | the `sim` approach |
 | `--audio` | A `pw:TARGET` preference for startup, or a direct input with `--serve`. |
@@ -89,11 +89,11 @@ uv run livesubs --config /srv/sub/livesubs.yaml --check
 
 ## Recognition and fallback
 
-- `session.speaker`, or `LIVESUBS_SESSION_SPEAKER`, is `auto` by default, `en` for an English pin, or `de` for a German pin. `--speaker` overrides it for one run. Deprecated `en+de` is normalised to `auto` with a migration warning; an explicit existing English setting remains English.
+- `session.speaker`, or `LIVESUBS_SESSION_SPEAKER`, is `auto` by default or a model-supported manual language code. Examples include `ar`, `ar-EG`, `fr` and `zh-HK` for Nova-3 general. Preserve regional and script selections in the recognition request; canonical casing is normalised. `--speaker` overrides the setting for one run. Deprecated `en+de` becomes `auto` with a migration warning; explicit existing pins remain explicit.
 - Every setting offers English, German and Arabic subtitles in canonical order. The operator's fallback is `session.default_language`, or `LIVESUBS_SESSION_DEFAULT_LANGUAGE`, with values `en`, `de`, `ar` and built-in default `en`. It does not depend on target order.
 - Remove `session.targets` from old deployments. A deprecated complete `en/de/ar` declaration is accepted and normalised; subsets, duplicates and unsupported codes fail validation instead of narrowing the offer. A speaker override does not hide an invalid target declaration.
-- Interactive startup preselects resolved recognition/fallback values and lets the operator change them before microphone setup. No terminal means no picker; `--serve` skips interactive setup. `/admin` can change the current run without rewriting configuration, as described in [QR delivery](07-delivery-qr.md).
-- Automatic opens Nova-3 `multi`; manual selection opens its single-language configuration. All translators use stable English/German subtitle-rendering prompts. Demand and committed source evidence decide whether any given item needs MT.
+- Interactive startup preselects resolved recognition/fallback values and uses the configured model's source choices before microphone setup, without requiring keys just to list them. No terminal means no picker; `--serve` skips interactive setup. `/admin` uses the same capabilities and can change the current run without rewriting configuration, as described in [QR delivery](07-delivery-qr.md).
+- Automatic opens Nova-3 general `multi` and retains English/German routing. A manual choice opens its exact monolingual code. All translators use stable generic multilingual subtitle prompts, so switching sources does not rebuild workers or reset context. Demand and committed evidence decide whether an item needs MT; matching manual Arabic needs none for Arabic readers.
 
 ## Groups
 
@@ -123,7 +123,7 @@ providers:
 ```
 
 - Options resolve from `LIVESUBS_PROVIDER_<NAME>_<KEY>`, then the configuration, then the registry default.
-- Automatic requires compatible Nova-3 configuration; model/language overrides are optional and must match the selected setting. Application construction validates recognition configuration without connecting, rejecting contradictory overrides rather than silently defeating the choice.
+- Automatic requires Nova-3 general or its documented alias. Manual options follow the exact reviewed model catalogue: Nova-2 has a smaller set without Arabic, while specialist English models have narrower choices. Unknown/custom models are rejected without guessing coverage. Model/language overrides are optional and filter the offered choices; an explicit regional selection cannot silently become a different locale. Application construction validates without connecting.
 - A new provider requires an explicit `role`:
 
 ```yaml

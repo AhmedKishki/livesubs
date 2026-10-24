@@ -77,7 +77,7 @@ async def run(self, hub: Hub, *, session_id: str, stop: asyncio.Event) -> None: 
 ```
 
 - `live-sim` shares the `pipeline` package with `live`. A new builder can reuse that pipeline with different adapters rather than reimplementing delivery.
-- Every session publisher declares `en`, `de`, `ar` in `supported_languages`. A missing capability is rejected rather than silently narrowing the session. To support console changes, implement `set_speaker(value)` and `speaker_snapshot()` using the runtime control contract.
+- Every session publisher declares `en`, `de`, `ar` in `supported_languages`. A missing capability is rejected rather than silently narrowing the session. Declare neutral `speaker_options` separately and implement `set_speaker(value)` and `speaker_snapshot()` for console changes. Unavailable source choices must fail before invalidating a working recogniser.
 
 ## Capture backends
 
@@ -103,11 +103,12 @@ def alive(self) -> bool: ...
 
 ## Languages and recognition settings
 
-- A language is an entry in `LANGUAGES` in `src/livesubs/languages.py`: its code, English name, native name, prompt wording and direction. The code is the one used on the wire, in the `viewer_<code>` role, in `?lang=` and in provider requests.
-- Current recognition settings are Automatic, English and German. All offer the fixed target set; the viewer fallback is a separate setting. A new spoken or target language requires a deliberate product, provider and routing change, not merely adding another mode.
-- Add a string pack for the language in `web/static/language.js`. Without one the viewer uses English strings and takes the language's name and direction from the session.
+- A subtitle target is an entry in `LANGUAGES` in `src/livesubs/languages.py`: its code, English name, native name, prompt wording and direction. That target code is used in segment output, the `viewer_<code>` role, `?lang=` and MT requests; manual ASR source codes are separate.
+- Manual source choices come from verified ASR model capabilities, not the target registry. Keep `SpeakerOption` metadata and source-code normalisation separate from the rich English/German/Arabic target records. All sources retain the fixed target set and an independent fallback.
+- A new target language needs a viewer string pack, target metadata and a deliberate product/routing change. A source-only French or Cantonese choice must not add a viewer role or caption language.
 - The ASR provider must support the requested recognition configuration and retain neutral language evidence, including explicit unsupported labels. A new automatic source language needs commitment-classification and passthrough tests; provider documentation alone must not expand supported speech.
-- Add lines for the language to the simulated lecture in `src/livesubs/sim.py`, so `--approach sim` and `tools/check_overlay_layout.py --language CODE` cover it.
+- The manual capability catalogue records exact model aliases, codes, source URLs and review date. Do not infer a regional variant or union monolingual/multilingual sets. Preserve the selected ASR code; only the defined reader-language families collapse for downstream matching.
+- For a new subtitle target, add its output lines to the simulated lecture in `src/livesubs/sim.py`, so `--approach sim` and `tools/check_overlay_layout.py --language CODE` cover it.
 - Extend registry, ordering, audience-gating and filtering tests when supported languages change. Cover automatic pure/mixed/unknown evidence as well as manual pins, rather than assuming a registry entry proves the routing. Check a new writing system in a real browser.
 
 ## Bilingual viewer extension
