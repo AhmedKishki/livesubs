@@ -45,7 +45,7 @@ def test_sim_speaker_controls():
     assert publisher.set_speaker("de") is False
     assert publisher.speaker_snapshot()["revision"] == 1
     with pytest.raises(ValueError):
-        publisher.set_speaker("ar")
+        publisher.set_speaker("fr")
 
 
 @pytest.mark.asyncio

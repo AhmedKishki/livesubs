@@ -32,3 +32,31 @@ def test_explicit_speaker_skips_speaker_picker(monkeypatch):
     )
     assert result.session.speaker == 'de'
     assert len(calls) == 1
+
+
+def test_startup_catalogue_without_credentials(monkeypatch):
+    monkeypatch.setattr(launcher, '_choose_target', lambda *args, **kwargs: 'mic')
+    monkeypatch.setattr(launcher, '_candidate', lambda *args: None)
+    monkeypatch.setattr(launcher, '_ensure_role', lambda *args, **kwargs: ('fake', False, None))
+    captured = []
+
+    def choose(title, entries, preferred):
+        captured.append((title, entries, preferred))
+        return 'zh-HK' if title == 'Speaker language' else 'ar'
+
+    monkeypatch.setattr(launcher, '_select_setting', choose)
+    result = launcher.prepare_live_start(Settings(session={'speaker': 'zh-HK'}), interactive=True)
+    assert result.session.speaker == 'zh-HK'
+    assert captured[0][2] == 'zh-HK'
+    assert 'ar' in dict(captured[0][1])
+    assert 'zh-HK' in dict(captured[0][1])
+
+
+def test_invalid_model_selection_rejected_before_microphone_or_credentials(monkeypatch):
+    import pytest
+
+    monkeypatch.setattr(launcher, '_choose_target', lambda *args, **kwargs: pytest.fail('microphone'))
+    settings = Settings(session={'speaker': 'ar'},
+                        providers={'deepgram': {'options': {'model': 'nova-2'}}})
+    with pytest.raises(ValueError, match='speaker|support'):
+        launcher.prepare_live_start(settings, interactive=False, explicit_speaker=True)

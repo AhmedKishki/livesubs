@@ -164,6 +164,10 @@ def build_router(settings: Settings) -> APIRouter:
                 #: Who is speaking, and what listeners can choose. The viewer page builds
                 #: its language picker from this, so it offers only what can be produced.
                 "source": session.source,
+                "speaker_options": [
+                    {"code": option.code, "name": option.name}
+                    for option in session.speaker_options
+                ],
                 "default": session.default_language,
                 "languages": list(session.targets),
                 "targets": [language_json(code) for code in session.targets],

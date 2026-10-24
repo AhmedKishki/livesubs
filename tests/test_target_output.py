@@ -31,7 +31,7 @@ def test_source_contract_is_frozen():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("language", ["en", "de"])
+@pytest.mark.parametrize("language", ["en", "de", "ar"])
 async def test_transcription_never_builds_or_warms_mt(language):
     factory = Mock(side_effect=AssertionError("must not build"))
     target, hub, sink, _ = worker(language, factory)
@@ -65,7 +65,7 @@ class Translator:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("source,target_language", [("mixed", "en"), ("unknown", "de"), ("en", "ar"), ("ar", "ar"), ("de", "en")])
+@pytest.mark.parametrize("source,target_language", [("mixed", "en"), ("unknown", "de"), ("en", "ar"), ("unknown", "ar"), ("de", "en"), *[(source, target) for source in ("fr", "zh-HK", "ja") for target in ("en", "de", "ar")]])
 async def test_conservative_routes_use_mt(source, target_language):
     mt = Translator()
     mt.release.set()

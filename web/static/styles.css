@@ -613,6 +613,13 @@ body {
   gap: 12px;
   margin-block: 20px;
 }
-.session-controls select { min-height: 44px; font: inherit; padding: 6px; }
+.session-controls select {
+  min-height: 44px;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  padding: 6px;
+}
 .session-controls p { flex-basis: 100%; margin: 0; }
 #settings-error { color: #ffb5b5; }

@@ -34,7 +34,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -52,6 +52,12 @@ from livesubs.pipeline.records import Committed, PipelineConfig, SourceSegment
 from livesubs.pipeline.stats import PipelineStats
 from livesubs.pipeline.targets import TargetWorker, WorkerEnv
 from livesubs.segmenter import Decision, SegmentBuffer
+from livesubs.speakers import (
+    DEFAULT_SPEAKER_OPTIONS,
+    SpeakerOption,
+    normalize_speaker,
+    routing_language,
+)
 from livesubs.transcript import TranscriptAssembler
 
 __all__ = ["Committed", "LivePipeline", "PipelineConfig"]
@@ -82,6 +88,7 @@ class LivePipeline:
         on_segment: Callable[[Committed], None] | None = None,
         on_source: Callable[[SourceSegment], None] | None = None,
         speaker: str | None = None,
+        speaker_options: Sequence[SpeakerOption] | None = None,
         require_audience: bool = False,
     ) -> None:
         """Wire a pipeline.
@@ -101,10 +108,12 @@ class LivePipeline:
         self.source = source
         self.source_language = source_language
         self.config = config or PipelineConfig()
+        self._speaker_options = tuple(
+            DEFAULT_SPEAKER_OPTIONS if speaker_options is None else speaker_options
+        )
+        self._speaker_codes = frozenset(option.code for option in self._speaker_options)
         requested = self.config.asr.language if speaker is None else speaker
-        self._requested = "auto" if requested == "en+de" else requested
-        if self._requested not in {"auto", "en", "de"}:
-            raise ValueError("speaker must be auto, en or de")
+        self._requested = self._validate_speaker(requested)
         self._recognition_revision = 0
         self._active_speaker: str | None = None
         self._stream_speaker: str | None = None
@@ -171,8 +180,7 @@ class LivePipeline:
         return tuple(self._workers)
 
     def set_speaker(self, value: str) -> bool:
-        if value not in {"auto", "en", "de"}:
-            raise ValueError("speaker must be auto, en or de")
+        value = self._validate_speaker(value)
         if value == self._requested:
             return False
         self._requested = value
@@ -185,6 +193,17 @@ class LivePipeline:
                 self._handover = True
             self._asr_life.invalidate()
         return True
+
+    @property
+    def speaker_options(self) -> tuple[SpeakerOption, ...]:
+        """Manual choices this recogniser can apply, plus Automatic when supported."""
+        return self._speaker_options
+
+    def _validate_speaker(self, value: str) -> str:
+        normalized = normalize_speaker(value)
+        if normalized not in self._speaker_codes:
+            raise ValueError("speaker language is unavailable for this recogniser")
+        return normalized
 
     def speaker_snapshot(self) -> dict[str, Any]:
         state = self._recognition_state
@@ -479,7 +498,8 @@ class LivePipeline:
         return life.current if life is not None else not self._require_audience
 
     def _pin(self) -> str | None:
-        return self._stream_speaker if self._stream_speaker in {"en", "de"} else None
+        selected = self._stream_speaker
+        return routing_language(selected) if selected is not None and selected != "auto" else None
 
     def _ingest_events(self) -> bool:
         """Fold the recogniser's new events into the unsent text, without awaiting.

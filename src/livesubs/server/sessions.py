@@ -22,6 +22,7 @@ from livesubs.events import HelloMessage, HelloPayload, PipelineStatus
 from livesubs.hub import Hub, SegmentPublisher
 from livesubs.languages import Mode
 from livesubs.metrics import LoopMonitor, process_stats
+from livesubs.speakers import DEFAULT_SPEAKER_OPTIONS, MULTILINGUAL_SOURCE, normalize_speaker
 
 __all__ = ["Session", "SessionRegistry"]
 
@@ -45,7 +46,8 @@ class Session:
         self.name = name
         self.mode = mode
         #: Stable source capabilities, independent of recognition intent.
-        self.source = "en+de"
+        self.source = MULTILINGUAL_SOURCE
+        self.speaker_options = tuple(getattr(publisher, "speaker_options", DEFAULT_SPEAKER_OPTIONS))
         if default_language not in {"en", "de", "ar"}:
             raise ValueError("default_language must be en, de or ar")
         self.default_language = default_language
@@ -114,9 +116,17 @@ class Session:
 
     def update_settings(self, values: Any) -> dict[str, Any]:
         """Validate the entire update before recording either choice, without yielding."""
-        allowed = {"speaker": {"auto", "en", "de"}, "default_language": {"en", "de", "ar"}}
+        allowed = {
+            "speaker": {option.code for option in self.speaker_options},
+            "default_language": {"en", "de", "ar"},
+        }
         if not isinstance(values, dict) or not values or values.keys() - allowed.keys():
             raise ValueError("expected speaker and/or default_language")
+        values = dict(values)
+        if "speaker" in values:
+            if not isinstance(values["speaker"], str):
+                raise ValueError("speaker must be a language code")
+            values["speaker"] = normalize_speaker(values["speaker"])
         if any(
             not isinstance(value, str) or value not in allowed[key]
             for key, value in values.items()

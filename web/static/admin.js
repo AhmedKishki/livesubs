@@ -58,18 +58,18 @@ function makeAdminView(session) {
   const $ = (id) => document.getElementById(id);
   const liveEl = $("live-lines");
   const srcEl = $("live-src");
+  srcEl.dir = "auto";
   const historyEl = $("history");
   const errorsEl = $("errors");
-  const controls = bindSessionControls(session.id, $);
+  const controls = bindSessionControls(session.id, $, fetch, session.speaker_options);
   controls.reconcile(session);
 
   const names = Object.fromEntries((session.targets ?? []).map((t) => [t.code, t.name]));
   const nameOf = (code) => names[code] ?? code.toUpperCase();
 
-  // A conversation's source names every language spoken, joined by "+".
-  const source = (session.source ?? "").toUpperCase();
+  const source = session.source ?? "multilingual";
   $("mode").textContent =
-    `${source} ${source.includes("+") ? "conversation" : "speaker"} → ` +
+    `${source} source → ` +
     session.languages.map((code) => nameOf(code)).join(", ");
 
   // One row per language, in the order the session offers them, each labelled with the
@@ -99,6 +99,7 @@ function makeAdminView(session) {
         }
         const src = document.createElement("span");
         src.className = "admin-src";
+        src.dir = "auto";
         src.textContent = entry.src ?? "–";
         item.append(src);
         return item;

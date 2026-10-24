@@ -5,9 +5,12 @@ import pytest
 from support import CountingMt, LifecycleAsr, RecordingHub, make_gated, running, wait_until
 
 from livesubs.asr.base import AsrEvent
+from livesubs.asr.stub import StubAsr
+from livesubs.audio.synthetic import SpeechLikeSource
 from livesubs.hub import ClientRole
 from livesubs.pipeline import LivePipeline
 from livesubs.pipeline.records import SourceSegment
+from livesubs.speakers import DEFAULT_SPEAKER_OPTIONS, MULTILINGUAL_SOURCE, SpeakerOption
 
 
 def pipeline(**kwargs):
@@ -24,8 +27,89 @@ def test_idle_intent_is_validated_revisioned_and_does_not_activate():
     assert live.speaker_snapshot()["revision"] == 1
     assert live.speaker_snapshot()["active"] is None
     with pytest.raises(ValueError):
-        live.set_speaker("ar")
+        live.set_speaker("fr")
     assert live.speaker_snapshot()["requested"] == "de"
+
+
+def test_model_speaker_choices_preserve_locale_and_validate_before_intent():
+    options = (*DEFAULT_SPEAKER_OPTIONS, SpeakerOption("ar-EG", "Arabic (Egypt)"),
+               SpeakerOption("fr", "French"), SpeakerOption("zh-HK", "Cantonese"))
+    live = pipeline(speaker="AR-eg", speaker_options=options)
+    assert live.speaker_options == options
+    assert isinstance(live.speaker_options, tuple)
+    assert live.speaker_snapshot()["requested"] == "ar-EG"
+    assert live._stream_config().language == "ar-EG"
+    live._stream_speaker = "ar-EG"
+    assert live._pin() == "ar"
+    assert live.set_speaker("ZH-hk")
+    assert live._stream_config().language == "zh-HK"
+    live._stream_speaker = "zh-HK"
+    assert live._pin() == "zh-hk"
+    before = live.speaker_snapshot()
+    with pytest.raises(ValueError):
+        live.set_speaker("ja")
+    assert live.speaker_snapshot() == before
+    with pytest.raises(ValueError):
+        pipeline(speaker="ar", speaker_options=options[:3])
+
+
+async def test_unavailable_speaker_choice_cannot_disturb_current_stream():
+    live, factory = make_gated(translators={"de": CountingMt()})
+    hub = RecordingHub(("de",))
+    async with running(live, hub):
+        reader = hub.subscribe(ClientRole.viewer("de"))
+        await wait_until(lambda: live.speaker_snapshot()["active"] == "en")
+        before = live.speaker_snapshot()
+        life_revision = live._asr_life.revision
+        with pytest.raises(ValueError):
+            live.set_speaker("fr")
+        assert live.speaker_snapshot() == before
+        assert live._asr_life.revision == life_revision
+        assert factory.instances[0].closes == 0 and live._asr.is_open
+        hub.unsubscribe(reader)
+
+
+@pytest.mark.parametrize("speaker,evidence,classification,bypass", [
+    ("ar", None, "ar", "ar"),
+    ("ar-EG", "ar-EG", "ar", "ar"),
+    ("fr", None, "fr", None),
+    ("zh-HK", "zh-HK", "zh-hk", None),
+    ("auto", "ar", "unknown", None),
+    ("ar", "fr", "unknown", None),
+])
+async def test_manual_source_routes_to_fixed_targets_without_broadening_automatic(
+    speaker, evidence, classification, bypass
+):
+    configs = []
+
+    class Recogniser(StubAsr):
+        async def open(self, config):
+            configs.append(config.language)
+            await super().open(config)
+
+    mts = {target: CountingMt() for target in ("en", "de", "ar")}
+    sources = []
+    live = LivePipeline(
+        source=SpeechLikeSource(duration_ms=800),
+        asr=Recogniser(phrases=("source words",), source_language=evidence,
+                       partial_interval_ms=100, partial_target_ms=300),
+        translators=mts,
+        source_language=MULTILINGUAL_SOURCE,
+        speaker=speaker,
+        speaker_options=(*DEFAULT_SPEAKER_OPTIONS, SpeakerOption("ar-EG", "Arabic (Egypt)"),
+                         SpeakerOption("fr", "French"), SpeakerOption("zh-HK", "Cantonese")),
+        on_source=sources.append,
+    )
+    hub = RecordingHub(("en", "de", "ar"))
+    await live.run(hub, session_id="manual", stop=asyncio.Event())
+    assert configs == ["en+de" if speaker == "auto" else speaker]
+    assert sources and {segment.language for segment in sources} == {classification}
+    for target, mt in mts.items():
+        if target == bypass:
+            assert mt.warms == mt.requests == 0
+        else:
+            assert mt.warms == 1 and mt.requests == len(sources)
+    assert live.source_language == MULTILINGUAL_SOURCE
 
 
 async def test_live_change_replaces_stream_without_replacing_workers_or_capture():

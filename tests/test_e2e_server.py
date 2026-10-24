@@ -139,7 +139,7 @@ async def test_a_plain_viewer_gets_the_default_language_without_the_source(
         messages = await messages_of(f"{base}/ws/demo", 3)
 
     assert [m["type"] for m in messages] == ["hello", "status", "segment"]
-    assert messages[0]["data"]["source"] == "en+de"
+    assert messages[0]["data"]["source"] == "multilingual"
     assert messages[0]["data"]["targets"] == ["en", "de", "ar"]
     assert messages[0]["data"]["language"] == default
     assert messages[2]["data"]["language"] == default

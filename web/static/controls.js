@@ -1,11 +1,25 @@
 // Live operator settings. Only server-confirmed state describes recognition.
-export function bindSessionControls(sessionId, element, fetcher = fetch) {
+const DEFAULT_SPEAKER_OPTIONS = [
+  { code: "auto", name: "Automatic (English/German)" },
+  { code: "en", name: "English" },
+  { code: "de", name: "German" },
+  { code: "ar", name: "Arabic" },
+];
+
+export function bindSessionControls(sessionId, element, fetcher = fetch, options = DEFAULT_SPEAKER_OPTIONS) {
   const speaker = element("speaker-language");
   const fallback = element("default-language");
   const status = element("recognition-state");
   const error = element("settings-error");
   let confirmed = null;
   let pending = false;
+
+  speaker.replaceChildren(...options.map(({ code, name }) => {
+    const option = speaker.ownerDocument.createElement("option");
+    option.value = code;
+    option.textContent = name;
+    return option;
+  }));
 
   function render() {
     if (!confirmed) return;

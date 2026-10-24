@@ -287,7 +287,7 @@ class TargetWorker:
                     self.queue.clear()
                     continue
                 item = self.queue.popleft()
-                if item.language in {"en", "de"} and item.language == self.language:
+                if item.language in {"en", "de", "ar"} and item.language == self.language:
                     self._publish(
                         item.seq, SegmentState.FINAL, item.text,
                         src=item.text, audio_ms=item.end_ms,

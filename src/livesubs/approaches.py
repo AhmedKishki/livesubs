@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Literal
 
 from livesubs.config import Settings
 from livesubs.hub import SegmentPublisher
+from livesubs.speakers import DEFAULT_SPEAKER_OPTIONS, MULTILINGUAL_SOURCE, SpeakerOption
 
 if TYPE_CHECKING:
     # Annotations only. The implementations are imported inside the builders that need
@@ -52,6 +53,7 @@ __all__ = [
     "required_roles",
     "requires_credentials",
     "resolve_audio_spec",
+    "speaker_options",
 ]
 
 ApproachStatus = Literal["ready", "planned", "retired"]
@@ -167,6 +169,7 @@ def build_approach(
         reason = approach.unavailable_reason or "not implemented yet"
         raise NotImplementedError(f"approach {name!r} is {approach.status}: {reason}")
 
+    validate_speaker(settings, name)
     assert approach.build is not None          # implied by `available`
     return approach.build(settings, options or {})
 
@@ -298,6 +301,44 @@ def _glossary(settings: Settings) -> tuple[str, ...]:
     return ()
 
 
+def speaker_options(settings: Settings, approach_name: str = "live") -> tuple[SpeakerOption, ...]:
+    """Resolve recognition metadata before credentials or transports are available."""
+    from livesubs.asr.deepgram_languages import speaker_options as deepgram_options
+
+    if approach_name in {"sim", "live-sim"}:
+        return DEFAULT_SPEAKER_OPTIONS
+    if approach_name == "live-text":
+        return deepgram_options()
+    chain = settings.providers_for("asr")
+    provider = settings.active_provider("asr") or (chain[0] if chain else None)
+    if provider is None or provider.name != "deepgram":
+        name = provider.name if provider is not None else "none"
+        raise ValueError(f"ASR provider {name!r} has no implemented adapter/verified speaker catalogue")
+    return deepgram_options(
+        settings.provider_option(provider.name, "model") or "nova-3",
+        settings.provider_option(provider.name, "language") or None,
+    )
+
+
+def validate_speaker(settings: Settings, approach_name: str = "live") -> None:
+    """Reject an unsupported selection without constructing a provider."""
+    if approach_name not in {"live", "live-text", "sim", "live-sim"}:
+        return  # Independently registered approaches own their capabilities.
+    if settings.session.speaker not in {o.code for o in speaker_options(settings, approach_name)}:
+        if approach_name == "live":
+            from livesubs.asr.deepgram_languages import validate_selection
+
+            validate_selection(
+                settings.provider_option("deepgram", "model") or "nova-3",
+                settings.session.speaker,
+                settings.provider_option("deepgram", "language") or None,
+            )
+        raise ValueError(
+            f"speaker language {settings.session.speaker!r} is unsupported by "
+            "the configured ASR model/options"
+        )
+
+
 def build_asr(settings: Settings) -> AsrProvider:
     """The recogniser for whichever provider is active for the ASR role.
 
@@ -321,6 +362,7 @@ def build_asr(settings: Settings) -> AsrProvider:
             "see docs/11-extending.md"
         )
 
+    validate_speaker(settings)
     key = _credentials(settings, provider.name)
     if key is None:
         raise ValueError(
@@ -378,7 +420,7 @@ def build_mt(settings: Settings, target_language: str) -> MtProvider:
         glossary=_glossary(settings),
         thinking=settings.provider_option(provider.name, "thinking"),
         timeout_s=mt_timeout_s(settings),
-        source_language="en+de",
+        source_language=MULTILINGUAL_SOURCE,
         target_language=target_language,
     )
 
@@ -480,7 +522,8 @@ def _build_live_sim(settings: Settings, options: ApproachOptions) -> SegmentPubl
         source=capture,
         asr=StubAsr(),
         translators={target: PassthroughMt() for target in mode.targets},
-        source_language="en+de",
+        source_language=MULTILINGUAL_SOURCE,
+        speaker_options=speaker_options(settings, "live-sim"),
         speaker=settings.session.speaker,
         config=pipeline_config(settings),
         on_segment=recorder,
@@ -512,7 +555,8 @@ def _build_live(settings: Settings, options: ApproachOptions) -> SegmentPublishe
         asr=build_asr(settings),
         asr_factory=lambda: build_asr(settings),
         translators=translators(settings),
-        source_language="en+de",
+        source_language=MULTILINGUAL_SOURCE,
+        speaker_options=speaker_options(settings),
         speaker=settings.session.speaker,
         config=pipeline_config(settings),
         on_segment=recorder,
@@ -557,7 +601,8 @@ def _build_live_text(settings: Settings, options: ApproachOptions) -> SegmentPub
         asr=TranscriptAsr(cues),
         asr_factory=lambda: TranscriptAsr(cues),
         translators=translators(settings),
-        source_language="en+de",
+        source_language=MULTILINGUAL_SOURCE,
+        speaker_options=speaker_options(settings, "live-text"),
         speaker=settings.session.speaker,
         config=pipeline_config(settings),
         on_segment=recorder,

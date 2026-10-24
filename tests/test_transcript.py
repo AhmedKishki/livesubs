@@ -348,6 +348,17 @@ def test_every_word_is_sent_exactly_once_whatever_the_cuts(seed: int) -> None:
         ([None, "en"], "en", "en"),
         ([None, "de"], "en", "unknown"),
         ([None, "fr"], "de", "unknown"),
+        ([None, "ar"], "ar", "ar"),
+        ([None, "ar-EG"], "ar-EG", "ar"),
+        (["ar", "ar"], None, "unknown"),
+        (["ar-EG", None], None, "unknown"),
+        ([None, "fr"], "fr", "fr"),
+        ([None, "ja"], "ja", "ja"),
+        ([None, "zh-HK"], "zh-HK", "zh-hk"),
+        (["zh", None], "zh-HK", "unknown"),
+        (["zh-Hant", None], "zh-Hans", "unknown"),
+        (["en", None], "ar", "unknown"),
+        (["ar", None], "fr", "unknown"),
     ],
 )
 def test_commit_classifies_exact_word_evidence(labels, pin, expected) -> None:
@@ -366,6 +377,9 @@ def test_commit_classifies_exact_word_evidence(labels, pin, expected) -> None:
 @pytest.mark.parametrize("guarantee,pin,expected", [
     (None, None, "unknown"), ("de", None, "de"),
     (None, "en", "en"), ("de", "en", "unknown"), ("fr", None, "unknown"),
+    (None, "ar", "ar"), (None, "ar-EG", "ar"), ("ar", "ar-EG", "ar"),
+    ("fr", "ar", "unknown"), (None, "zh-HK", "zh-hk"),
+    ("zh", "zh-HK", "unknown"), ("ar", None, "unknown"),
 ])
 def test_untimed_guarantee_and_manual_pin(guarantee, pin, expected) -> None:
     assembler = TranscriptAssembler()
@@ -373,6 +387,15 @@ def test_untimed_guarantee_and_manual_pin(guarantee, pin, expected) -> None:
     event.language = guarantee
     assembler.feed(event)
     assert assembler.commit_source(pin=pin).language == expected
+
+
+@pytest.mark.parametrize("pin", ["auto", "en+de", "unknown", "mixed", "", "ar_EG", "123"])
+def test_invalid_manual_pin_does_not_consume_pending_text(pin):
+    assembler = TranscriptAssembler()
+    assembler.feed(partial("pending text", timed=False))
+    with pytest.raises(ValueError):
+        assembler.commit_source(pin=pin)
+    assert assembler.pending
 
 
 def test_language_corrections_do_not_report_speech_and_sent_words_do_not_leak() -> None:

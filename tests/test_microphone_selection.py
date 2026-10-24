@@ -130,6 +130,18 @@ def pty_session(sources, *, preferred: str | None = None):
         session.shutdown()
 
 
+def test_large_catalogue_navigation_restores_terminal(monkeypatch):
+    monkeypatch.setattr(os, "get_terminal_size", lambda fd: os.terminal_size((80, 10)))
+    entries = [(str(index), f"Language {index}") for index in range(120)]
+    with pty_session(entries, preferred="110") as session:
+        assert b"> Language 110" in session.output
+        session.send(b"\x1b[B")
+        assert session.confirm() == "111"
+        assert session.error is None
+        assert termios.tcgetattr(session.slave) == session.termios_before
+        assert _CURSOR_VISIBLE in session.output
+
+
 def _read_available(fd: int, timeout: float = 1.0) -> bytes:
     end = time.monotonic() + timeout
     data = bytearray()

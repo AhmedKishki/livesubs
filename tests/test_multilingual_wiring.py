@@ -22,20 +22,21 @@ def test_live_sim_wiring(monkeypatch):
     monkeypatch.setattr(livesubs.pipeline, 'LivePipeline', lambda **kwargs: kwargs)
     monkeypatch.setattr(approaches, 'artefacts', lambda settings, capture: (capture, None))
     result = approaches.build_approach('live-sim', Settings(session={'speaker': 'de'}))
-    assert result['source_language'] == 'en+de'
+    assert result['source_language'] == 'multilingual'
+    assert tuple(o.code for o in result['speaker_options']) == ('auto', 'en', 'de', 'ar')
     assert result['speaker'] == 'de'
     assert tuple(result['translators']) == ('en', 'de', 'ar')
     assert result['config'].asr.language == 'de'
 
 
-@pytest.mark.parametrize('speaker', ['auto', 'en', 'de'])
+@pytest.mark.parametrize('speaker', ['auto', 'en', 'de', 'ar', 'zh-HK'])
 def test_mt_source_is_stable(monkeypatch, speaker):
     import livesubs.mt.openai_compat
 
     monkeypatch.setenv('DEEPSEEK_API_KEY', 'test-only-placeholder')
     monkeypatch.setattr(livesubs.mt.openai_compat, 'OpenAiCompatMt', lambda **kwargs: kwargs)
     result = approaches.build_mt(Settings(session={'speaker': speaker}), 'en')
-    assert result['source_language'] == 'en+de'
+    assert result['source_language'] == 'multilingual'
     assert result['target_language'] == 'en'
 
 

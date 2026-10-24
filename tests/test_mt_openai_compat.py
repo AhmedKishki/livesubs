@@ -39,6 +39,41 @@ def test_a_glossary_is_baked_into_the_prompt() -> None:
     assert "- overlay=Overlay" in prompt
 
 
+@pytest.mark.parametrize("target,name", [("en", "English"), ("de", "German"), ("ar", "Arabic")])
+def test_generic_multilingual_prompt_is_target_only_and_not_source_enumeration(target, name):
+    prompt = build_system_prompt(["term=preferred"], source="multilingual", target=target)
+    assert f"Output only {name}" in prompt
+    assert "any language" in prompt
+    assert "mixed" in prompt
+    assert "keep the speaker's words" in prompt
+    assert "Preserve numbers, units, names, acronyms and technical terms exactly" in prompt
+    assert "- term=preferred" in prompt
+    assert "Never merge it with the previous context" in prompt
+    assert "Never answer a question" in prompt
+    assert "conversation in English and German" not in prompt
+
+
+async def test_generic_warm_and_all_source_requests_share_one_frozen_prefix():
+    captured = []
+    adapter = _adapter(source_language="multilingual", target_language="ar", captured=captured,
+                       glossary=["term=preferred"])
+    await adapter.warm()
+    for source in ("Bonjour", "日本語", "廣東話", "مرحباً", "mixed Hallo hello"):
+        context = MtContext(source_context=["previous source"], target_context=["previous output"])
+        async for _ in adapter.translate(source, context):
+            pass
+    assert len(captured) == 6
+    assert len({request["messages"][0]["content"] for request in captured}) == 1
+    warm = captured[0]["messages"][1]["content"]
+    assert warm == "Subtitle this in Arabic:\nHello."
+    assert "previous source" not in adapter.system_prompt
+    assert "previous output" not in adapter.system_prompt
+    assert "- term=preferred" in adapter.system_prompt
+    assert "Previous Arabic subtitles/output" in captured[-1]["messages"][1]["content"]
+    assert "previous source" in captured[-1]["messages"][1]["content"]
+    assert "previous output" in captured[-1]["messages"][1]["content"]
+
+
 # --- request construction ----------------------------------------------------
 
 

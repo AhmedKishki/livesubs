@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,6 +13,8 @@ from livesubs.server import create_app
 
 class ControlledPublisher:
     supported_languages = ("en", "de", "ar")
+    speaker_options = tuple(SimpleNamespace(code=code, name=name) for code, name in (
+        ("auto", "Auto"), ("en", "English"), ("de", "German"), ("ar", "Arabic")))
 
     def __init__(self):
         self.requested = "auto"
@@ -42,7 +45,7 @@ def test_fixed_offer_and_distinct_fallback():
     with client_for(fallback="ar") as client:
         data = client.get("/api/session").json()
         assert data["languages"] == ["en", "de", "ar"]
-        assert data["source"] == "en+de"
+        assert data["source"] == "multilingual"
         assert data["default"] == "ar"
         assert data["default_language"] == "ar"
         assert data["recognition"]["requested"] == "auto"
@@ -62,7 +65,7 @@ def test_settings_revision_and_noop_are_independent_of_recognition_revision():
         assert client.get("/api/stats").json()["session"]["revision"] == 2
 
 
-@pytest.mark.parametrize("body", [{}, [], None, {"speaker": "ar"},
+@pytest.mark.parametrize("body", [{}, [], None, {"speaker": "xx"},
     {"speaker": "de", "default_language": "xx"}, {"extra": 1}, {"speaker": 1}])
 def test_invalid_settings_are_atomic(body):
     with client_for() as client:
@@ -120,3 +123,72 @@ def test_explicit_viewer_role_survives_fallback_change_and_reconnect():
         assert client.post("/api/session/demo/settings", json={"default_language": "ar"}).status_code == 200
         with client.websocket_connect("/ws/demo?role=viewer_de") as reconnected:
             assert reconnected.receive_json()["data"]["language"] == "de"
+
+
+def test_speaker_options_are_source_metadata_not_viewer_languages_or_polling_data():
+    publisher = ControlledPublisher()
+    publisher.speaker_options += (
+        SimpleNamespace(code="fr", name="French"),
+        SimpleNamespace(code="zh-HK", name="Chinese (Hong Kong)"),
+    )
+    expected = [{"code": option.code, "name": option.name} for option in publisher.speaker_options]
+    with client_for(publisher) as client:
+        for path in ("/api/session", "/api/session/demo"):
+            metadata = client.get(path).json()
+            assert metadata["speaker_options"] == expected
+            assert metadata["languages"] == ["en", "de", "ar"]
+            assert [target["code"] for target in metadata["targets"]] == ["en", "de", "ar"]
+        assert "speaker_options" not in client.get("/api/stats").json()["session"]
+        with client.websocket_connect("/ws/demo?role=viewer_ar") as ws:
+            hello = ws.receive_json()
+            assert hello["v"] == 2
+            assert hello["data"]["source"] == "multilingual"
+            assert hello["data"]["targets"] == ["en", "de", "ar"]
+        for speaker in ("ar", "fr", "zh-HK"):
+            result = client.post("/api/session/demo/settings", json={"speaker": speaker})
+            assert result.status_code == 200
+            assert result.json()["speaker"] == speaker
+            assert "speaker_options" not in result.json()
+
+
+def test_regional_speaker_is_canonicalized_before_validation_and_noop_detection():
+    publisher = ControlledPublisher()
+    publisher.speaker_options += (SimpleNamespace(code="fr-CA", name="French (Canada)"),)
+    with client_for(publisher) as client:
+        first = client.post("/api/session/demo/settings", json={"speaker": "FR-ca"})
+        assert first.status_code == 200
+        assert first.json()["speaker"] == "fr-CA"
+        same = client.post("/api/session/demo/settings", json={"speaker": "fr-ca"})
+        assert same.json() == first.json()
+        assert publisher.revision == 1
+
+
+@pytest.mark.parametrize(("speaker", "fallback"), [
+    ("ar", "de"), ("fr", "ar"), ("en", "fr"), ("fr_CA", "de"),
+])
+def test_unsupported_model_choice_rejects_entire_update_before_publisher_invalidation(speaker, fallback):
+    publisher = ControlledPublisher()
+    publisher.speaker_options = publisher.speaker_options[:3]
+    with client_for(publisher) as client:
+        before = client.get("/api/session").json()
+        rejected = client.post("/api/session/demo/settings", json={"speaker": speaker, "default_language": fallback})
+        assert rejected.status_code == 422
+        after = client.get("/api/session").json()
+        for key in ("speaker", "default_language", "revision", "recognition"):
+            assert after[key] == before[key]
+        assert publisher.revision == 0
+
+
+def test_simulation_controls_accept_only_advertised_source_choices():
+    from livesubs.sim import SimPublisher
+
+    publisher = SimPublisher()
+    with client_for(publisher) as client:
+        metadata = client.get("/api/session").json()
+        assert {option["code"] for option in metadata["speaker_options"]} == {"auto", "en", "de", "ar"}
+        assert client.post("/api/session/demo/settings", json={"speaker": "ar"}).status_code == 200
+        before = client.get("/api/session").json()
+        assert client.post("/api/session/demo/settings", json={"speaker": "fr", "default_language": "de"}).status_code == 422
+        after = client.get("/api/session").json()
+        assert after["recognition"] == before["recognition"]
+        assert after["default_language"] == "en"

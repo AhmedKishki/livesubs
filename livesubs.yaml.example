@@ -34,6 +34,8 @@ session:
   name: Live subtitles
   # Recognition: auto detects English/German turns; en and de pin recognition.
   # Legacy en+de is deprecated: replace it with auto.
+  # Manual codes (for example ar, fr or zh-HK) must be supported by the ASR model.
+  # Regional/script pins are preserved; Automatic remains English/German.
   # Every setting offers English, German and Arabic subtitles.
   speaker: auto
   # Used only when neither the URL nor browser preferences choose a supported language.

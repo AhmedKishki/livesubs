@@ -130,7 +130,7 @@ def test_session_metadata_matches_the_wire_contract(
     with make_client(TickingPublisher(default, optional), speaker) as client:
         payload = client.get("/api/session").json()
         assert payload["id"] == "demo"
-        assert payload["source"] == "en+de"
+        assert payload["source"] == "multilingual"
         assert payload["default"] == default
         assert payload["languages"] == ["en", "de", "ar"]
         assert payload["version"] == 2
@@ -316,7 +316,7 @@ def test_viewer_gets_identity_health_then_subtitles_without_the_source(
         hello = ws.receive_json()
         assert hello["type"] == "hello"
         assert hello["data"]["session_id"] == "demo"
-        assert hello["data"]["source"] == "en+de"
+        assert hello["data"]["source"] == "multilingual"
         assert hello["data"]["targets"] == ["en", "de", "ar"]
         assert hello["data"]["language"] == default
 

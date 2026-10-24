@@ -27,9 +27,10 @@
     <section class="session-controls" aria-label="Live session settings">
       <label for="speaker-language">Speaker language</label>
       <select id="speaker-language">
-        <option value="auto">Auto</option>
+        <option value="auto">Automatic (English/German)</option>
         <option value="en">English</option>
         <option value="de">German</option>
+        <option value="ar">Arabic</option>
       </select>
       <label for="default-language">Fallback subtitle language</label>
       <select id="default-language">
@@ -93,7 +94,7 @@
     <section class="admin-live">
       <h2>Now</h2>
       <div id="live-lines"></div>
-      <p id="live-src" class="admin-src">–</p>
+      <p id="live-src" class="admin-src" dir="auto">–</p>
     </section>
 
     <section class="admin-log">

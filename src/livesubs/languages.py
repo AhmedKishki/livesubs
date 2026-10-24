@@ -11,6 +11,8 @@ import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from livesubs.speakers import normalize_speaker
+
 __all__ = [
     "LANGUAGES",
     "MODES",
@@ -93,7 +95,7 @@ def spoken(source: str) -> tuple[str, ...]:
 def names(codes: Sequence[str]) -> str:
     """Languages by their English names: "English", "English and German"."""
 
-    named = [language(code).name for code in codes]
+    named = [LANGUAGES[code].name if code in LANGUAGES else code for code in codes]
     if len(named) < 2:
         return "".join(named)
     return f"{', '.join(named[:-1])} and {named[-1]}"
@@ -145,11 +147,12 @@ class Mode:
         return self
 
 
-#: Supported recognition settings. Spoken Arabic is outside the application scope.
+#: Common recognition settings; other syntactically valid manual codes are built on demand.
 MODES: dict[str, Mode] = {
     "auto": Mode(source="en+de", targets=("en", "de", "ar")),
     "en": Mode(source="en", targets=("en", "de", "ar")),
     "de": Mode(source="de", targets=("en", "de", "ar")),
+    "ar": Mode(source="ar", targets=("en", "de", "ar")),
     "en+de": Mode(source="en+de", targets=("en", "de", "ar")),
 }
 
@@ -157,14 +160,9 @@ MODES: dict[str, Mode] = {
 def mode_for(speaker: str, targets: Sequence[str] = ()) -> Mode:
     """The mode for a speaker language, optionally narrowed to some of its targets."""
 
-    if speaker == "en+de":
+    if speaker.strip().lower() == "en+de":
         warnings.warn("session.speaker en+de is deprecated; use auto instead", stacklevel=2)
         speaker = "auto"
-    try:
-        mode = MODES[speaker]
-    except KeyError:
-        known = ", ".join(sorted(MODES))
-        raise ValueError(
-            f"no mode for a {speaker!r} speaker; supported speaker languages: {known}"
-        ) from None
+    speaker = normalize_speaker(speaker)
+    mode = MODES.get(speaker, Mode(source=speaker, targets=("en", "de", "ar")))
     return mode.narrowed(targets)

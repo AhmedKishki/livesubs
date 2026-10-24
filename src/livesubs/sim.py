@@ -33,6 +33,7 @@ from livesubs.events import (
 from livesubs.hub import Hub
 from livesubs.languages import MODES, Mode
 from livesubs.segmenter import hold_ms
+from livesubs.speakers import DEFAULT_SPEAKER_OPTIONS, MULTILINGUAL_SOURCE, SpeakerOption
 
 __all__ = ["SCRIPTS", "SimPublisher", "SimScript", "SimSegment", "replay"]
 
@@ -224,7 +225,7 @@ async def replay(
         data=HelloPayload(
             session_id=session_id,
             session_name=f"sim:{script}",
-            source="en+de",
+            source=MULTILINGUAL_SOURCE,
             targets=list(targets),
         )
     )
@@ -238,10 +239,13 @@ async def replay(
     while True:
         for offset, seg in enumerate(segments):
             seq = completed + offset
-            requested = speaker_getter() if speaker_getter else speaker
-            language = requested if requested != "auto" else seg.source_language
-            src = (seg.final[language] if language in {"en", "de"}
-                   else seg.source_text or seg.final["en"])
+            requested = _speaker(speaker_getter()) if speaker_getter else speaker
+            source_language = requested if requested != "auto" else seg.source_language
+            src = (seg.final[source_language] if requested != "auto"
+                   else seg.source_text or seg.final.get(source_language, seg.final["en"]))
+            language = source_language
+            if requested == "auto" and language not in {"en", "de", "mixed", "unknown"}:
+                language = "unknown"
             if on_source:
                 on_source(seq, language)
 
@@ -349,6 +353,10 @@ class SimPublisher:
     def __post_init__(self) -> None:
         self.speaker = _speaker(self.speaker)
 
+    @property
+    def speaker_options(self) -> tuple[SpeakerOption, ...]:
+        return DEFAULT_SPEAKER_OPTIONS
+
     def set_speaker(self, value: str) -> bool:
         value = _speaker(value)
         if value == self.speaker:
@@ -408,6 +416,6 @@ class SimPublisher:
 def _speaker(value: str) -> str:
     if value == "en+de":
         return "auto"
-    if value not in {"auto", "en", "de"}:
-        raise ValueError("speaker must be auto, en or de")
+    if value not in {option.code for option in DEFAULT_SPEAKER_OPTIONS}:
+        raise ValueError("canned simulation speaker must be auto, en, de or ar")
     return value

@@ -76,9 +76,9 @@ def test_a_mode_cannot_be_widened() -> None:
         mode_for("de", ["de"])
 
 
-def test_an_unsupported_speaker_language_is_refused_with_the_alternatives() -> None:
-    with pytest.raises(ValueError, match="de, en"):
-        mode_for("fr")
+def test_source_only_language_does_not_expand_targets() -> None:
+    assert mode_for("fr").source == "fr"
+    assert mode_for("fr").targets == ("en", "de", "ar")
 
 
 def test_an_unknown_language_is_refused() -> None:

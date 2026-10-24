@@ -27,10 +27,19 @@ from livesubs.keystore import (
     remove_env_var,
     upsert_env_var,
 )
-from livesubs.languages import MODES
 from livesubs.sim import SCRIPTS, replay
 
 __all__ = ["main"]
+
+
+def _speaker_argument(value: str) -> str:
+    from livesubs.speakers import normalize_speaker
+
+    try:
+        normalize_speaker(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    return value  # Preserve the legacy alias so the config owner emits its warning.
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -81,10 +90,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--speaker",
-        choices=sorted(MODES),
+        type=_speaker_argument,
         default=None,
         help=(
-            "recognition setting: auto, en or de; en+de is a deprecated alias for auto. "
+            "recognition setting: auto or a supported model language code; "
+            "en+de is a deprecated alias for auto. "
             "All settings offer English, German and Arabic subtitles; default: "
             "session.speaker, then auto"
         ),
@@ -256,6 +266,13 @@ def _cmd_check(
         require_credentials=needs_keys,
         roles=required_roles(name) if needs_keys else None,
     )
+
+    from livesubs.approaches import validate_speaker
+
+    try:
+        validate_speaker(settings, name)
+    except ValueError as exc:
+        problems.append(str(exc))
 
     resolved = find_config_file(config_path)
 
@@ -748,11 +765,15 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _cmd_check(config_path, approach_name=args.approach, speaker=args.speaker)
 
     if args.preflight:
+        from livesubs.approaches import validate_speaker
         from livesubs.preflight import _main as preflight_main
 
+        settings = get_settings(config_path).for_session(speaker=args.speaker)
+        name = args.approach or _default_approach()
+        validate_speaker(settings, name)
         return preflight_main(
-            get_settings(config_path).for_session(speaker=args.speaker),
-            approach_name=args.approach or _default_approach(),
+            settings,
+            approach_name=name,
         )
 
     if args.approaches:

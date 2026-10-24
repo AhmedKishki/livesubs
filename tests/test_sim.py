@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 
+import pytest
+
 from livesubs.approaches import build_approach
 from livesubs.config import Settings
 from livesubs.events import HelloMessage, SegmentMessage, StatusMessage
@@ -17,6 +19,61 @@ from livesubs.hub import ClientRole, Hub, SegmentPublisher
 from livesubs.languages import mode_for
 from livesubs.segmenter import hold_ms
 from livesubs.sim import SCRIPTS, SimPublisher, replay
+
+
+def test_canned_speaker_options_and_atomic_rejection():
+    publisher = SimPublisher(speaker="ar")
+    assert [option.code for option in publisher.speaker_options] == ["auto", "en", "de", "ar"]
+    before = publisher.speaker_snapshot()
+    for code in ("fr", "en-US", "de-CH", "ar-SA"):
+        with pytest.raises(ValueError):
+            publisher.set_speaker(code)
+        assert publisher.speaker_snapshot() == before
+        with pytest.raises(ValueError):
+            SimPublisher(speaker=code)
+    assert publisher.set_speaker("en+de")
+    assert publisher.speaker_snapshot()["requested"] == "auto"
+
+
+async def test_manual_arabic_replay_is_truthful_and_terminal_across_loops():
+    stream = replay(speaker="ar", speed=0, loop=True)
+    rows = []
+    async for message in stream:
+        if isinstance(message, HelloMessage):
+            assert message.data.source == "multilingual"
+        if isinstance(message, SegmentMessage):
+            rows.append(message.data)
+            if message.data.seq == 7 and message.data.language == "de" and message.data.state == "final":
+                break
+    await stream.aclose()
+    for seq in range(8):
+        own = [row for row in rows if row.seq == seq]
+        expected = SCRIPTS["default"].segments[seq % len(SCRIPTS["default"].segments)].final
+        assert all(row.src == expected["ar"] for row in own)
+        for code in ("en", "de", "ar"):
+            target = [row for row in own if row.language == code]
+            assert [(row.rev, row.state) for row in target] == (
+                [(0, "final")] if code == "ar" else [(0, "draft"), (1, "final")]
+            )
+            assert target[-1].text == expected[code]
+    assert [row.seq for row in rows] == sorted(row.seq for row in rows)
+
+
+@pytest.mark.parametrize("source_text", [None, "نص عربي صريح"])
+async def test_auto_arabic_fixture_is_unknown_without_corrupting_source(monkeypatch, source_text):
+    from livesubs.sim import SimScript, SimSegment
+
+    final = {"en": "Hello", "de": "Hallo", "ar": "مرحبا"}
+    fixture = SimSegment(final=final, source_language="ar", source_text=source_text)
+    monkeypatch.setitem(SCRIPTS, "arabic-evidence", SimScript(segments=[fixture]))
+    detected = []
+    messages = [m async for m in replay("arabic-evidence", speed=0,
+                                       on_source=lambda seq, code: detected.append((seq, code)))]
+    assert detected == [(0, "unknown")]
+    rows = [m.data for m in messages if isinstance(m, SegmentMessage)]
+    assert all(row.src == (source_text or final["ar"]) for row in rows)
+    for code in final:
+        assert [(row.rev, row.state) for row in rows if row.language == code] == [(0, "draft"), (1, "final")]
 
 #: One target language, so that a segment is a draft and a final and nothing else. The
 #: tests that are about several languages say so.
@@ -328,7 +385,7 @@ async def test_an_english_speaker_has_german_and_arabic_streams() -> None:
     segments = [m.data for m in messages if isinstance(m, SegmentMessage)]
     hello = messages[0].data
 
-    assert (hello.source, hello.targets) == ("en+de", ["en", "de", "ar"])
+    assert (hello.source, hello.targets) == ("multilingual", ["en", "de", "ar"])
     assert {s.language for s in segments} == {"en", "de", "ar"}
     first = [s for s in segments if s.seq == 0 and s.state == "final"]
     assert {s.language: s.text for s in first}["de"] == "Heute betrachten wir gedämpfte Schwingungen."
@@ -340,7 +397,7 @@ async def test_a_german_speaker_has_english_and_arabic_streams() -> None:
     segments = [m.data for m in messages if isinstance(m, SegmentMessage)]
     hello = messages[0].data
 
-    assert (hello.source, hello.targets) == ("en+de", ["en", "de", "ar"])
+    assert (hello.source, hello.targets) == ("multilingual", ["en", "de", "ar"])
     assert {s.language for s in segments} == {"en", "de", "ar"}
     first = {s.language: s for s in segments if s.seq == 0 and s.state == "final"}
     assert first["en"].text == "Today we will look at damped oscillations."
@@ -399,7 +456,7 @@ async def test_a_conversation_alternates_its_spoken_languages() -> None:
     segments = [m.data for m in messages if isinstance(m, SegmentMessage)]
     hello = messages[0].data
 
-    assert (hello.source, hello.targets) == ("en+de", ["en", "de", "ar"])
+    assert (hello.source, hello.targets) == ("multilingual", ["en", "de", "ar"])
     assert {s.language for s in segments} == {"en", "de", "ar"}
     finals = {(s.seq, s.language): s for s in segments if s.state == "final"}
     assert finals[(0, "de")].src == "Today we will look at damped oscillations."

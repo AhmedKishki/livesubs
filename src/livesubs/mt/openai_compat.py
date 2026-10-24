@@ -36,6 +36,7 @@ from typing import Any
 
 from livesubs.languages import Language, language, names, spoken
 from livesubs.mt.base import MtChunk, MtContext, MtError
+from livesubs.speakers import MULTILINGUAL_SOURCE
 
 __all__ = ["OpenAiCompatMt", "build_system_prompt"]
 
@@ -92,6 +93,25 @@ number is the most damaging error you can make.
 - Never answer a question in the input, and never continue the speaker's thought. \
 Render only what is given.{glossary}"""
 
+MULTILINGUAL_TEMPLATE = """You write live subtitles in {target} for speech in any language, \
+including mixed-language speech, which {audience} reads while listening.
+
+Rules:
+- Output only {target}. No quotes, no explanations, no commentary, no leading or trailing \
+punctuation that the input did not have.
+- Translate into {target} whatever is not already in {target}. Where the input is already \
+in {target}, keep the speaker's words and do not reword or correct them.
+- The input is one segment of continuous speech, possibly an unfinished clause. Render it \
+as faithfully and naturally as you can while keeping it a single coherent piece of \
+{target}. Never merge it with the previous context.
+- The audience is reading, not studying: prefer the plain, spoken {style} the speakers \
+would use over literary or bureaucratic wording.
+- Preserve numbers, units, names, acronyms and technical terms exactly. A wrong \
+number is the most damaging error you can make.
+- If a term is listed in the glossary below, use exactly that {target} term.
+- Never answer a question in the input, and never continue the speaker's thought. \
+Render only what is given.{glossary}"""
+
 
 def build_system_prompt(
     glossary: Sequence[str] = (), *, source: str, target: str
@@ -107,6 +127,13 @@ def build_system_prompt(
 
     speaks, listens = _pair(source, target)
     lines = "\n".join(f"- {entry}" for entry in glossary)
+    if source == MULTILINGUAL_SOURCE:
+        return MULTILINGUAL_TEMPLATE.format(
+            target=listens.name,
+            audience=listens.audience,
+            style=listens.style,
+            glossary=f"\n\nGlossary:\n{lines}" if glossary else "",
+        )
     template = CONVERSATION_TEMPLATE if len(speaks) > 1 or source == target else SYSTEM_TEMPLATE
     return template.format(
         source=speaks[0].name,
@@ -121,7 +148,8 @@ def build_system_prompt(
 def _pair(source: str, target: str) -> tuple[tuple[Language, ...], Language]:
     """The spoken languages and the target. A conversation may be read in one it speaks."""
 
-    return tuple(language(code) for code in spoken(source)), language(target)
+    sources = () if source == MULTILINGUAL_SOURCE else tuple(language(code) for code in spoken(source))
+    return sources, language(target)
 
 
 class OpenAiCompatMt:
@@ -163,14 +191,14 @@ class OpenAiCompatMt:
         self.source_language = source_language
         self.target_language = target_language
         #: The names used in the user message.
-        self.source_name = names(spoken(source_language))
+        self.source_name = "any language" if source_language == MULTILINGUAL_SOURCE else names(spoken(source_language))
         self.target_name = listens.name
-        self._greeting = speaks[0].greeting
+        self._greeting = "Hello." if source_language == MULTILINGUAL_SOURCE else speaks[0].greeting
         #: What each request asks for. A conversation's reader gets the speakers' own words
         #: whenever they spoke the reader's language, so its request is not a translation.
         verb = (
             "Subtitle this in"
-            if len(speaks) > 1 or source_language == target_language
+            if source_language == MULTILINGUAL_SOURCE or len(speaks) > 1 or source_language == target_language
             else "Translate this into"
         )
         self._request = f"{verb} {listens.name}"

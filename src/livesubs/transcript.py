@@ -33,6 +33,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from livesubs.asr.base import AsrEvent
+from livesubs.speakers import normalize_speaker, routing_language
 
 __all__ = ["Token", "TranscriptAssembler", "TranscriptCommit"]
 
@@ -148,8 +149,11 @@ class TranscriptAssembler:
     def commit_source(self, pin: str | None = None) -> TranscriptCommit:
         """Consume unsent tokens once, classifying only their retained evidence."""
 
-        if pin not in (None, "en", "de"):
-            raise ValueError("source pin must be en, de or None")
+        if pin is not None:
+            pin = normalize_speaker(pin)
+            if pin == "auto":
+                raise ValueError("source pin must be a manual language code or None")
+            pin = routing_language(pin)
         tokens = [*self._settled, *self._tail]
         if not tokens:
             return TranscriptCommit("", "unknown")
@@ -178,7 +182,8 @@ def _tokens_of(event: AsrEvent) -> list[Token]:
 
 
 def _classify(tokens: list[Token], pin: str | None) -> str:
-    labels = {token.language for token in tokens}
+    labels = {routing_language(token.language) if token.language is not None else None
+              for token in tokens}
     if pin is not None:
         return pin if labels <= {None, pin} else "unknown"
     if labels - {None, "en", "de"}:

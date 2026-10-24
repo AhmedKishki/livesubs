@@ -255,9 +255,8 @@ def test_a_deployment_can_offer_fewer_languages(clean_env: None) -> None:
         Settings(_env_file=None, session={"speaker": "en", "targets": ["ar", "de"]})
 
 
-def test_startup_reports_an_unsupported_speaker(clean_env: None) -> None:
-    with pytest.raises(ValueError, match="speaker"):
-        Settings(_env_file=None, session={"speaker": "fr"})
+def test_config_accepts_generic_manual_syntax_for_adapter_validation(clean_env: None) -> None:
+    assert Settings(_env_file=None, session={"speaker": "fr"}).source_language == "fr"
 
 
 def test_startup_reports_a_target_the_mode_does_not_offer(clean_env: None) -> None:

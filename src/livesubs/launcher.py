@@ -41,16 +41,22 @@ def prepare_live_start(
 
     speaker = settings.session.speaker
     fallback = settings.default_language
+    from livesubs.approaches import speaker_options
+
+    options = speaker_options(settings)
     if interactive:
         if not explicit_speaker:
             speaker = _select_setting(
-                "Speaker language", [("auto", "Automatic"), ("en", "English"), ("de", "German")],
+                "Speaker language", [(option.code, option.name) for option in options],
                 speaker,
             )
         fallback = _select_setting(
             "Fallback subtitle language", [("en", "English"), ("de", "Deutsch"), ("ar", "العربية")],
             fallback,
         )
+
+    if speaker not in {option.code for option in options}:
+        raise ValueError(f"speaker language {speaker!r} is unsupported by the configured ASR model/options")
 
     target = _choose_target(
         settings, preferred_target, interactive=interactive, output_stream=sys.stderr

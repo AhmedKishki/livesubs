@@ -53,8 +53,8 @@ def select_microphone(
 ) -> str:
     """Let the operator choose a source and return its exact ``node.name``.
 
-    ``sources`` holds ``(node.name, node.description)`` pairs. Every entry is
-    rendered even when there is only one. ``preferred`` highlights the matching
+    ``sources`` holds ``(node.name, node.description)`` pairs. A bounded window
+    follows the selection in long lists. ``preferred`` highlights the matching
     node if it is listed, otherwise the first entry is highlighted.
 
     Raises :class:`ValueError` when there is nothing to choose from or when
@@ -148,12 +148,16 @@ def _render(
 ) -> int:
     """Draw the list in place and return the number of owned lines."""
 
-    columns = os.get_terminal_size(out_fd).columns or 80
+    size = os.get_terminal_size(out_fd)
+    columns = size.columns or 80
+    visible = min(len(entries), max(1, (size.lines or 24) - 3))
+    start = max(0, min(current - visible // 2, len(entries) - visible))
     width = max(1, columns - 1)
     lines: list[str] = []
     if previous_lines:
-        lines.append(f"\x1b[{previous_lines}A")
-    for index, (name, description) in enumerate(entries):
+        lines.append(f"\x1b[{previous_lines}A\r\x1b[J")
+    for index in range(start, start + visible):
+        name, description = entries[index]
         label = _sanitize(description) or _sanitize(name)
         detail = _sanitize(name)
         text = f"{label}  ({detail})"
@@ -161,9 +165,12 @@ def _render(
             lines.append("\r\x1b[K\x1b[7m" + _fit_line("> " + text, width) + "\x1b[0m\r\n")
         else:
             lines.append("\r\x1b[K" + _fit_line("  " + text, width) + "\r\n")
-    lines.append("\r\x1b[K" + _fit_line(_HELP, width) + "\r\n")
+    help_text = _HELP
+    if visible < len(entries):
+        help_text += f"  {current + 1}/{len(entries)}"
+    lines.append("\r\x1b[K" + _fit_line(help_text, width) + "\r\n")
     os.write(out_fd, "".join(lines).encode("utf-8", "replace"))
-    return len(entries) + 1
+    return visible + 1
 
 
 def _fit_line(text: str, width: int) -> str:

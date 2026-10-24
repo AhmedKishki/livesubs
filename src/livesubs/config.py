@@ -168,11 +168,12 @@ class SessionSettings(_Group):
     @field_validator("speaker")
     @classmethod
     def validate_speaker(cls, value: str) -> str:
-        if value == "en+de":
+        if value.strip().lower() == "en+de":
             warnings.warn("session.speaker en+de is deprecated; use auto instead", stacklevel=2)
             return "auto"
-        mode_for(value)
-        return value
+        from livesubs.speakers import normalize_speaker
+
+        return normalize_speaker(value)
 
     @field_validator("default_language")
     @classmethod
